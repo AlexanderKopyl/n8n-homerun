@@ -2,8 +2,12 @@ server {
     listen 443 ssl http2;
     server_name n8n-homerun.local;
 
-    ssl_certificate /opt/homebrew/etc/nginx/certs/n8n-homerun.local.pem;
-    ssl_certificate_key /opt/homebrew/etc/nginx/certs/n8n-homerun.local-key.pem;
+    # Replace these two paths with your existing local SSL certificates directory.
+    # Do not commit real private keys.
+    ssl_certificate /path/to/your/ssl/n8n-homerun.local.pem;
+    ssl_certificate_key /path/to/your/ssl/n8n-homerun.local-key.pem;
+
+    add_header X-N8N-Homerun-VHost matched always;
 
     location / {
         proxy_pass http://127.0.0.1:15678;
