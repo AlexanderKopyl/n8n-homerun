@@ -17,12 +17,6 @@ Local-only n8n installation with Docker Compose.
 http://n8n-homerun.local:15678
 ```
 
-Optional local Nginx HTTPS proxy:
-
-```text
-https://n8n-homerun.local
-```
-
 ## Requirements
 
 ```bash
@@ -95,31 +89,6 @@ n8n_homerun_postgres   Up   5432/tcp
 
 PostgreSQL should not expose `5432` to the host.
 
-## Optional Nginx HTTPS proxy
-
-Use example config:
-
-```text
-nginx/n8n-homerun.local.ssl.conf.example
-```
-
-Copy it into your active local Nginx vhost directory and set your real local SSL certificate paths.
-
-Validate and reload:
-
-```bash
-nginx -t && nginx -s reload
-```
-
-Check vhost:
-
-```bash
-curl -Ik --resolve n8n-homerun.local:443:127.0.0.1 https://n8n-homerun.local \
-  | grep -Ei "HTTP|X-N8N|x-powered-by|server"
-```
-
-If you see `x-powered-by: PHP`, the request is still going to another local PHP/Symfony vhost.
-
 ## Maintenance
 
 ```bash
@@ -187,8 +156,6 @@ docker compose logs --tail=120 n8n
 If n8n reports mismatching encryption keys, restore the original `N8N_ENCRYPTION_KEY` in `.env` and restart n8n.
 
 If PostgreSQL rejects login for user `n8n`, restore the original `POSTGRES_PASSWORD` in `.env` or update the PostgreSQL user password to match the current `.env` value.
-
-If direct URL works but HTTPS domain does not, Docker is fine and the issue is local Nginx vhost routing.
 
 ## Cleanup
 
