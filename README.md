@@ -83,6 +83,26 @@ data/
 
 The `data/` directory is ignored by Git.
 
+## Migrating from old Docker volumes
+
+If this project was previously using Docker named volumes, copy existing n8n files into `./data/n8n` before relying on the local directory setup.
+
+```bash
+docker compose down
+
+mkdir -p data/n8n data/postgres backups
+
+docker run --rm \
+  -v n8n_homerun_n8n_data:/old:ro \
+  -v "$PWD/data/n8n:/new" \
+  alpine sh -c 'cp -a /old/. /new/ && chown -R 1000:1000 /new'
+
+docker compose up -d
+docker compose ps
+```
+
+If the database also still exists only in the old PostgreSQL volume, create a dump before switching and restore it into the new `./data/postgres` database.
+
 ## Important after first start
 
 Do not regenerate these `.env` values after the first successful start:
@@ -166,6 +186,8 @@ docker compose logs --tail=120 n8n
 If n8n reports mismatching encryption keys, restore the original `N8N_ENCRYPTION_KEY` in `.env` and restart n8n.
 
 If PostgreSQL rejects login for user `n8n`, restore the original `POSTGRES_PASSWORD` in `.env` or update the PostgreSQL user password to match the current `.env` value.
+
+If the browser shows `Cannot GET /` after moving to `./data/`, verify that `data/n8n` is not empty and copy the old `n8n_homerun_n8n_data` volume into it.
 
 ## Cleanup
 
