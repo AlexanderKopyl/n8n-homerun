@@ -8,7 +8,7 @@ Local-only n8n installation with Docker Compose.
 - Uses a dedicated PostgreSQL container.
 - Keeps PostgreSQL internal to Docker, without host port binding.
 - Exposes n8n only on localhost: `127.0.0.1:15678`.
-- Stores all persistent data in named Docker volumes.
+- Stores persistent data inside the local project directory under `./data/`.
 - Keeps real local configuration in `.env`, which is ignored by Git.
 
 ## Default URL
@@ -57,6 +57,8 @@ POSTGRES_PASSWORD="$(openssl rand -base64 32 | tr -d '\n' | tr '/+' '_-')"
 perl -0777 -i.bak -pe "s|N8N_ENCRYPTION_KEY=.*|N8N_ENCRYPTION_KEY=$N8N_ENCRYPTION_KEY|; s|POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$POSTGRES_PASSWORD|" .env
 rm -f .env.bak
 
+mkdir -p data/n8n data/postgres
+
 docker compose config
 docker compose pull
 docker compose up -d
@@ -69,6 +71,18 @@ Open:
 open http://n8n-homerun.local:15678
 ```
 
+## Data layout
+
+Persistent data is stored in the project directory:
+
+```text
+data/
+  n8n/       # n8n config and local files
+  postgres/  # PostgreSQL database files
+```
+
+The `data/` directory is ignored by Git.
+
 ## Important after first start
 
 Do not regenerate these `.env` values after the first successful start:
@@ -78,7 +92,7 @@ N8N_ENCRYPTION_KEY
 POSTGRES_PASSWORD
 ```
 
-They must stay stable while Docker volumes exist.
+They must stay stable while local data exists.
 
 ## Expected containers
 
@@ -98,7 +112,7 @@ docker compose up -d
 # stop without deleting data
 docker compose stop
 
-# stop and remove containers/network, keep volumes
+# stop and remove containers/network, keep local data
 docker compose down
 
 # logs
@@ -121,16 +135,12 @@ docker compose exec -T postgres pg_dump \
   > "backups/n8n_postgres_$(date +%Y%m%d_%H%M%S).sql"
 ```
 
-n8n data volume:
+Local data directory:
 
 ```bash
 mkdir -p backups
 
-docker run --rm \
-  -v n8n_homerun_n8n_data:/data:ro \
-  -v "$PWD/backups:/backup" \
-  alpine \
-  tar czf "/backup/n8n_data_$(date +%Y%m%d_%H%M%S).tar.gz" -C /data .
+tar czf "backups/n8n_local_data_$(date +%Y%m%d_%H%M%S).tar.gz" data
 ```
 
 ## Update
@@ -165,13 +175,14 @@ Safe cleanup:
 docker compose down
 ```
 
-Danger: delete all local n8n/PostgreSQL data:
+Danger: delete all local project data:
 
 ```bash
-docker compose down -v
+docker compose down
+rm -rf data
 ```
 
-Use `down -v` only when you intentionally want to delete all local project data.
+Use `rm -rf data` only when you intentionally want to delete all local n8n and PostgreSQL data.
 
 ## Git safety
 
@@ -180,6 +191,7 @@ Do not commit:
 ```text
 .env
 backups/
+data/
 *.sql
 *.tar.gz
 ```
