@@ -1,6 +1,7 @@
 .idea
 .env
 backups/
+data/
 *.sql
 *.tar.gz
 .DS_Store
