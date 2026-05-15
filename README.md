@@ -1,21 +1,26 @@
 # n8n Homerun
 
-Local-only n8n setup with Docker Compose.
+Local-only n8n installation with Docker Compose.
 
-## Architecture
+## What this setup does
 
-- `n8n` container exposed only on localhost.
-- Dedicated `postgres` container for n8n data.
-- PostgreSQL is not exposed to the host.
-- Internal Docker network only for app/database traffic.
-- Persistent named volumes:
-  - `n8n_data`
-  - `n8n_postgres_data`
+- Runs n8n locally in Docker.
+- Uses a dedicated PostgreSQL container.
+- Keeps PostgreSQL internal to Docker, without host port binding.
+- Exposes n8n only on localhost: `127.0.0.1:15678`.
+- Stores all persistent data in named Docker volumes.
+- Keeps real local configuration in `.env`, which is ignored by Git.
 
-Default local URL:
+## Default URL
 
 ```text
 http://n8n-homerun.local:15678
+```
+
+Optional local Nginx HTTPS proxy:
+
+```text
+https://n8n-homerun.local
 ```
 
 ## Requirements
@@ -25,7 +30,7 @@ docker --version
 docker compose version
 ```
 
-Check occupied ports before start:
+Check local ports before starting:
 
 ```bash
 lsof -iTCP -sTCP:LISTEN -n -P
@@ -33,53 +38,32 @@ docker ps --format "table {{.Names}}\t{{.Ports}}\t{{.Status}}"
 lsof -nP -iTCP:15678 -sTCP:LISTEN || echo "Port 15678 is free"
 ```
 
-## Local domain
+## Hosts
 
-Add this line to `/etc/hosts`:
+Add:
 
 ```text
 127.0.0.1 n8n-homerun.local
 ```
 
-macOS command:
+macOS:
 
 ```bash
 sudo sh -c 'echo "127.0.0.1 n8n-homerun.local" >> /etc/hosts'
 ```
 
-Verify:
-
-```bash
-ping -c 1 n8n-homerun.local
-```
-
-## First setup
-
-Create local `.env` from example:
+## First install
 
 ```bash
 cp .env.example .env
-```
 
-Generate local secrets:
-
-```bash
 N8N_ENCRYPTION_KEY="$(openssl rand -hex 32)"
 POSTGRES_PASSWORD="$(openssl rand -base64 32 | tr -d '\n' | tr '/+' '_-')"
 
-perl -0777 -i.bak -pe "s/N8N_ENCRYPTION_KEY=.*/N8N_ENCRYPTION_KEY=$N8N_ENCRYPTION_KEY/; s/POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$POSTGRES_PASSWORD/" .env
+perl -0777 -i.bak -pe "s|N8N_ENCRYPTION_KEY=.*|N8N_ENCRYPTION_KEY=$N8N_ENCRYPTION_KEY|; s|POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=$POSTGRES_PASSWORD|" .env
 rm -f .env.bak
-```
 
-Validate Compose config:
-
-```bash
 docker compose config
-```
-
-Start:
-
-```bash
 docker compose pull
 docker compose up -d
 docker compose ps
@@ -91,35 +75,73 @@ Open:
 open http://n8n-homerun.local:15678
 ```
 
+## Important after first start
+
+Do not regenerate these `.env` values after the first successful start:
+
+```text
+N8N_ENCRYPTION_KEY
+POSTGRES_PASSWORD
+```
+
+They must stay stable while Docker volumes exist.
+
+## Expected containers
+
+```text
+n8n_homerun_app        Up   127.0.0.1:15678->5678/tcp
+n8n_homerun_postgres   Up   5432/tcp
+```
+
+PostgreSQL should not expose `5432` to the host.
+
+## Optional Nginx HTTPS proxy
+
+Use example config:
+
+```text
+nginx/n8n-homerun.local.ssl.conf.example
+```
+
+Copy it into your active local Nginx vhost directory and set your real local SSL certificate paths.
+
+Validate and reload:
+
+```bash
+nginx -t && nginx -s reload
+```
+
+Check vhost:
+
+```bash
+curl -Ik --resolve n8n-homerun.local:443:127.0.0.1 https://n8n-homerun.local \
+  | grep -Ei "HTTP|X-N8N|x-powered-by|server"
+```
+
+If you see `x-powered-by: PHP`, the request is still going to another local PHP/Symfony vhost.
+
 ## Maintenance
 
-Start:
-
 ```bash
+# start
 docker compose up -d
-```
 
-Stop without deleting data:
-
-```bash
+# stop without deleting data
 docker compose stop
-```
 
-Logs:
+# stop and remove containers/network, keep volumes
+docker compose down
 
-```bash
+# logs
 docker compose logs -f n8n
-```
 
-Restart:
-
-```bash
-docker compose restart
+# status
+docker compose ps
 ```
 
 ## Backup
 
-Backup PostgreSQL:
+PostgreSQL:
 
 ```bash
 mkdir -p backups
@@ -130,7 +152,7 @@ docker compose exec -T postgres pg_dump \
   > "backups/n8n_postgres_$(date +%Y%m%d_%H%M%S).sql"
 ```
 
-Backup n8n volume:
+n8n data volume:
 
 ```bash
 mkdir -p backups
@@ -152,26 +174,45 @@ docker compose up -d
 docker compose logs -f n8n
 ```
 
-Check version:
+For safer updates, pin `N8N_IMAGE` in `.env` to a specific version instead of `latest`.
+
+## Troubleshooting
+
+Check logs:
 
 ```bash
-docker compose exec n8n n8n --version
+docker compose logs --tail=120 n8n
 ```
 
-For safer updates, replace `N8N_IMAGE=n8nio/n8n:latest` in `.env` with a fixed version tag after the first successful setup.
+If n8n reports mismatching encryption keys, restore the original `N8N_ENCRYPTION_KEY` in `.env` and restart n8n.
 
-## Rollback / cleanup
+If PostgreSQL rejects login for user `n8n`, restore the original `POSTGRES_PASSWORD` in `.env` or update the PostgreSQL user password to match the current `.env` value.
 
-Stop and remove containers/network, keep volumes:
+If direct URL works but HTTPS domain does not, Docker is fine and the issue is local Nginx vhost routing.
+
+## Cleanup
+
+Safe cleanup:
 
 ```bash
 docker compose down
 ```
 
-Danger: remove all local n8n data as well:
+Danger: delete all local n8n/PostgreSQL data:
 
 ```bash
 docker compose down -v
 ```
 
-Use `down -v` only if you intentionally want to delete local n8n and PostgreSQL data.
+Use `down -v` only when you intentionally want to delete all local project data.
+
+## Git safety
+
+Do not commit:
+
+```text
+.env
+backups/
+*.sql
+*.tar.gz
+```
