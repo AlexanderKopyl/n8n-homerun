@@ -1,0 +1,649 @@
+{
+  "name": "Analytics Slack Report",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "45 9 * * *"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -1100,
+        0
+      ],
+      "id": "a7c1e010-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Schedule Trigger",
+      "notes": "Development placeholder: 09:45 Europe/Kyiv daily. Set the real schedule here."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "b3d20200-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+              "name": "athenaRegion",
+              "value": "eu-central-1",
+              "type": "string"
+            },
+            {
+              "id": "b3d20210-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+              "name": "athenaDatabase",
+              "value": "operator_ro_normcasino",
+              "type": "string"
+            },
+            {
+              "id": "b3d20220-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+              "name": "athenaCatalog",
+              "value": "AwsDataCatalog",
+              "type": "string"
+            },
+            {
+              "id": "b3d20230-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+              "name": "athenaWorkgroup",
+              "value": "primary",
+              "type": "string"
+            },
+            {
+              "id": "b3d20240-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+              "name": "athenaOutputLocation",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "b3d20250-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+              "name": "slackWebhookUrl",
+              "value": "https://hooks.slack.com/services/REPLACE/WITH/YOUR-WEBHOOK",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -880,
+        0
+      ],
+      "id": "a7c1e130-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Config",
+      "notes": "Edit these after import. slackWebhookUrl is a secret: fill it in here on the n8n instance and strip it again before exporting the workflow."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://athena.{{ $('Config').first().json.athenaRegion }}.amazonaws.com/",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "awsAssumeRole",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-amz-json-1.1"
+            },
+            {
+              "name": "X-Amz-Target",
+              "value": "AmazonAthena.StartQueryExecution"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"QueryString\": \"WITH\\n-- Period definitions: generate all required time buckets\\nperiods AS (\\n    -- Year\\n    SELECT\\n        'year' AS level,\\n        CAST(YEAR(CURRENT_DATE) AS VARCHAR) AS period,\\n        DATE_TRUNC('year', CURRENT_DATE) AS start_date,\\n        CURRENT_DATE AS end_date,\\n        1 AS sort_order\\n    UNION ALL\\n    -- Previous month\\n    SELECT\\n        'month' AS level,\\n        DATE_FORMAT(DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1' MONTH, '%M %Y') AS period,\\n        DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '1' MONTH AS start_date,\\n        DATE_TRUNC('month', CURRENT_DATE) AS end_date,\\n        2 AS sort_order\\n    UNION ALL\\n    -- Current month\\n    SELECT\\n        'month' AS level,\\n        DATE_FORMAT(DATE_TRUNC('month', CURRENT_DATE), '%M %Y') AS period,\\n        DATE_TRUNC('month', CURRENT_DATE) AS start_date,\\n        CURRENT_DATE AS end_date,\\n        3 AS sort_order\\n    UNION ALL\\n    -- Weeks of current month (generated dynamically)\\n    SELECT\\n        'week' AS level,\\n        CONCAT(\\n            'Week ', CAST(WEEK_OF_YEAR(week_start) AS VARCHAR),\\n            ' · ',\\n            DATE_FORMAT(week_start, '%d'),\\n            '–',\\n            DATE_FORMAT(week_start + INTERVAL '6' DAY, '%d %b')\\n        ) AS period,\\n        week_start AS start_date,\\n        LEAST(\\n            week_start + INTERVAL '7' DAY,\\n            CURRENT_DATE\\n        ) AS end_date,\\n        100 + WEEK_OF_YEAR(week_start) AS sort_order\\n    FROM (\\n        SELECT\\n            DATE_TRUNC(\\n                'week',\\n                DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1' DAY * w.n\\n            ) AS week_start\\n        FROM UNNEST(\\n            SEQUENCE(\\n                0,\\n                DATE_DIFF(\\n                    'day',\\n                    DATE_TRUNC('month', CURRENT_DATE),\\n                    CURRENT_DATE\\n                )\\n            )\\n        ) AS w(n)\\n    ) weeks\\n    WHERE week_start >= DATE_TRUNC('month', CURRENT_DATE)\\n      AND week_start < CURRENT_DATE\\n    GROUP BY week_start\\n    UNION ALL\\n    -- Days of current/latest week\\n    SELECT\\n        'day' AS level,\\n        CONCAT(DATE_FORMAT(day_date, '%d %b'), ' · ', DATE_FORMAT(day_date, '%W')) AS period,\\n        day_date AS start_date,\\n        day_date + INTERVAL '1' DAY AS end_date,\\n        200 + DAY_OF_YEAR(day_date) AS sort_order\\n    FROM (\\n        SELECT DATE_TRUNC('week', CURRENT_DATE - INTERVAL '1' DAY) + INTERVAL '1' DAY * d.n AS day_date\\n        FROM UNNEST(SEQUENCE(0, 6)) AS d(n)\\n    ) days\\n    WHERE day_date < CURRENT_DATE\\n),\\n\\ndaily_metrics AS (\\n    SELECT\\n        p.level,\\n        p.period,\\n        p.sort_order,\\n        SUM(pd.cnt_fd) AS ftd,\\n        SUM(pd.cnt_sd) AS std,\\n        SUM(pd.cnt_reg) AS registrations,\\n        SUM(pd.deposit_amount_eur) AS total_dep,\\n        SUM(pd.deposit_amount_eur) - SUM(pd.withdrawal_amount_eur) AS in_out,\\n        SUM(pd.deposit_count) AS deposit_count,\\n        SUM(pd.deposit_amount_eur) FILTER (WHERE pd.is_streamer = false) AS hold_deposits,\\n        SUM(pd.withdrawal_amount_eur) FILTER (WHERE pd.is_streamer = false) AS hold_withdrawals\\n    FROM operator_ro_normcasino.agg_product_dashboard_hyper pd\\n    JOIN periods p ON pd.as_of_date >= p.start_date AND pd.as_of_date < p.end_date\\n    WHERE pd.is_test = false\\n      AND p.level != 'year'\\n    GROUP BY p.level, p.period, p.sort_order\\n),\\n\\nyear_metrics AS (\\n    SELECT\\n        'year' AS level,\\n        CAST(YEAR(CURRENT_DATE) AS VARCHAR) AS period,\\n        1 AS sort_order,\\n        SUM(cnt_fd) AS ftd,\\n        SUM(cnt_sd) AS std,\\n        SUM(cnt_reg) AS registrations,\\n        SUM(deposit_amount_eur) AS total_dep,\\n        SUM(deposit_amount_eur) - SUM(withdrawal_amount_eur) AS in_out,\\n        SUM(deposit_count) AS deposit_count,\\n        SUM(deposit_amount_eur) FILTER (WHERE is_streamer = false) AS hold_deposits,\\n        SUM(withdrawal_amount_eur) FILTER (WHERE is_streamer = false) AS hold_withdrawals\\n    FROM operator_ro_normcasino.agg_all_report_statistics_hyper\\n    WHERE as_of_date >= DATE_TRUNC('year', CURRENT_DATE)\\n      AND is_test = false\\n),\\n\\nph2_metrics AS (\\n    SELECT\\n        p.level,\\n        p.period,\\n        p.sort_order,\\n        SUM(CASE WHEN br.transaction_status = 'Success' and br.transaction_type = 'deposit' THEN br.cnt_transaction ELSE 0 END) AS successful_deposits,\\n        SUM(CASE WHEN br.transaction_type = 'deposit' THEN br.cnt_transaction ELSE 0 END) AS total_deposit_attempts,\\n        SUM(CASE WHEN br.transaction_status = 'Success' THEN br.cnt_transaction ELSE 0 END) AS successful_trans,\\n        SUM(br.cnt_transaction) AS total_trans_attempts\\n    FROM operator_ro_normcasino.agg_billing_report_hyper br\\n    JOIN periods p ON br.create_date >= p.start_date AND br.create_date < p.end_date\\n    WHERE br.is_test = false\\n    GROUP BY p.level, p.period, p.sort_order\\n),\\n\\nhour_3_metrics AS (\\n    SELECT\\n        '3h' AS level,\\n        CONCAT(\\n            LPAD(CAST(FLOOR(HOUR(h.as_of_date) / 3) * 3 AS VARCHAR), 2, '0'), ':00–',\\n            LPAD(CAST(FLOOR(HOUR(h.as_of_date) / 3) * 3 + 3 AS VARCHAR), 2, '0'), ':00'\\n        ) AS period,\\n        30000 + FLOOR(HOUR(h.as_of_date) / 3) * 3 AS sort_order,\\n        SUM(h.cnt_fd) AS ftd,\\n        SUM(h.cnt_sd) AS std,\\n        SUM(h.cnt_reg) AS registrations,\\n        SUM(h.deposit_amount) AS total_dep,\\n        SUM(h.deposit_amount) - SUM(h.withdrawal_amount) AS in_out,\\n        SUM(h.deposit_count) AS deposit_count,\\n        SUM(h.deposit_amount) AS hold_deposits,\\n        SUM(h.withdrawal_amount) AS hold_withdrawals\\n    FROM operator_ro_normcasino.agg_product_dashboard_hourly_hyper h\\n    WHERE DATE(h.as_of_date) = CURRENT_DATE\\n      AND h.is_test = false\\n    GROUP BY FLOOR(HOUR(h.as_of_date) / 3) * 3\\n),\\n\\nhour_3_ph2 AS (\\n    SELECT\\n        CONCAT(\\n            LPAD(CAST(FLOOR(HOUR(ph.create_date) / 3) * 3 AS VARCHAR), 2, '0'), ':00–',\\n            LPAD(CAST(FLOOR(HOUR(ph.create_date) / 3) * 3 + 3 AS VARCHAR), 2, '0'), ':00'\\n        ) AS period,\\n        SUM(CASE WHEN ph.trx_type = 'deposit' AND ph.transaction_status = 'Success' THEN ph.cnt_transaction ELSE 0 END) AS successful_deposits,\\n        SUM(CASE WHEN ph.trx_type = 'deposit' THEN ph.cnt_transaction ELSE 0 END) AS total_deposit_attempts,\\n        SUM(CASE WHEN ph.transaction_status = 'Success' THEN ph.cnt_transaction ELSE 0 END) AS successful_trans,\\n        SUM(ph.cnt_transaction) AS total_trans_attempts\\n    FROM operator_ro_normcasino.agg_ph2_hourly_hyper ph\\n    WHERE DATE(ph.create_date) = CURRENT_DATE\\n      AND ph.is_test = false\\n    GROUP BY FLOOR(HOUR(ph.create_date) / 3) * 3\\n),\\n\\nall_metrics AS (\\n    SELECT *\\n    FROM daily_metrics\\n    UNION ALL\\n    SELECT *\\n    FROM year_metrics\\n    UNION ALL\\n    SELECT *\\n    FROM hour_3_metrics\\n)\\n\\nSELECT\\n    m.level,\\n    m.period,\\n    CAST(m.ftd AS BIGINT) AS ftd,\\n    CAST(ROUND(m.total_dep) AS BIGINT) AS total_dep,\\n    CAST(ROUND(m.in_out) AS BIGINT) AS in_out,\\n    ROUND(\\n        CASE\\n            WHEN m.hold_deposits > 0\\n            THEN (m.hold_deposits - m.hold_withdrawals) * 100.0 / m.hold_deposits\\n            ELSE 0\\n        END,\\n        1\\n    ) AS hold,\\n    ROUND(\\n        CASE\\n            WHEN m.registrations > 0\\n            THEN m.ftd * 100.0 / m.registrations\\n            ELSE 0\\n        END,\\n        1\\n    ) AS reg2dep,\\n    ROUND(\\n        CASE\\n            WHEN m.ftd > 0\\n            THEN m.std * 100.0 / m.ftd\\n            ELSE 0\\n        END,\\n        1\\n    ) AS ftd2std,\\n    ROUND(\\n        CASE\\n            WHEN COALESCE(ph.total_trans_attempts, hp.total_trans_attempts) > 0\\n            THEN COALESCE(ph.successful_trans, hp.successful_trans) * 100.0\\n                 / COALESCE(ph.total_trans_attempts, hp.total_trans_attempts)\\n            ELSE 0\\n        END,\\n        1\\n    ) AS ar_psp,\\n    ROUND(\\n        CASE\\n            WHEN COALESCE(ph.total_deposit_attempts, hp.total_deposit_attempts) > 0\\n            THEN COALESCE(ph.successful_deposits, hp.successful_deposits) * 100.0\\n                 / COALESCE(ph.total_deposit_attempts, hp.total_deposit_attempts)\\n            ELSE 0\\n        END,\\n        1\\n    ) AS ar_psp_deposits\\nFROM all_metrics m\\nLEFT JOIN ph2_metrics ph\\n    ON m.level = ph.level\\n    AND m.period = ph.period\\n    AND m.level != '3h'\\nLEFT JOIN hour_3_ph2 hp\\n    ON m.period = hp.period\\n    AND m.level = '3h'\\nORDER BY m.sort_order\",\n  \"QueryExecutionContext\": { \"Database\": \"{{ $('Config').first().json.athenaDatabase }}\", \"Catalog\": \"{{ $('Config').first().json.athenaCatalog || 'AwsDataCatalog' }}\" },\n  \"WorkGroup\": \"{{ $('Config').first().json.athenaWorkgroup || 'primary' }}\",\n  \"ClientRequestToken\": \"n8n-analytics-slack-report-exec-{{ $execution.id }}\"\n  {{ $('Config').first().json.athenaOutputLocation ? ', \"ResultConfiguration\": { \"OutputLocation\": \"' + $('Config').first().json.athenaOutputLocation + '\" }' : '' }}\n}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -660,
+        0
+      ],
+      "id": "a7c1e020-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Execute Athena Query",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "amount": 5,
+        "unit": "seconds"
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -440,
+        0
+      ],
+      "id": "a7c1e030-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Wait 5s",
+      "webhookId": "b3d29000-2b3c-4d5e-9f60-a1b2c3d4e5f6"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://athena.{{ $('Config').first().json.athenaRegion }}.amazonaws.com/",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "awsAssumeRole",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-amz-json-1.1"
+            },
+            {
+              "name": "X-Amz-Target",
+              "value": "AmazonAthena.GetQueryExecution"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"QueryExecutionId\": \"{{ $('Execute Athena Query').first().json.QueryExecutionId }}\"\n}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -220,
+        0
+      ],
+      "id": "a7c1e040-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Poll Athena Query Status",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "b3d20010-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "SUCCEEDED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Succeeded"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "b3d20020-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "QUEUED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Queued"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "b3d20030-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "RUNNING",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Running"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "b3d20040-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "FAILED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Failed"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "b3d20050-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "CANCELLED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Cancelled"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "Unexpected State"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        0,
+        0
+      ],
+      "id": "a7c1e050-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Athena Query State"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b3d20060-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+              "leftValue": "={{ $runIndex }}",
+              "rightValue": 120,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        260,
+        180
+      ],
+      "id": "a7c1e060-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Poll Attempts Remaining?",
+      "notes": "true -> wait and poll again; false -> give up after 120 polls (~10 min)"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://athena.{{ $('Config').first().json.athenaRegion }}.amazonaws.com/",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "awsAssumeRole",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-amz-json-1.1"
+            },
+            {
+              "name": "X-Amz-Target",
+              "value": "AmazonAthena.GetQueryResults"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"QueryExecutionId\": \"{{ $('Execute Athena Query').first().json.QueryExecutionId }}\",\n  \"MaxResults\": 1000\n}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        260,
+        -200
+      ],
+      "id": "a7c1e070-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Get Athena Results",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize Analytics Data\n//\n// Input : one item = the raw Athena GetQueryResults response.\n// Output: one item = analytics rows grouped by level, in Athena's own order.\n//\n// This node does NOT calculate anything. Athena is the source of truth for\n// period generation, aggregation, metric calculation and ordering.\n\nconst SUPPORTED_LEVELS = ['year', 'month', 'week', 'day', '3h'];\n\nconst NUMERIC_COLUMNS = [\n  'ftd',\n  'total_dep',\n  'in_out',\n  'hold',\n  'reg2dep',\n  'ftd2std',\n  'ar_psp',\n  'ar_psp_deposits',\n];\n\n/** Athena returns every value as a string, or omits VarCharValue entirely for NULL. */\nfunction cellValue(cell) {\n  if (cell === null || cell === undefined) return null;\n  const raw = cell.VarCharValue;\n  if (raw === null || raw === undefined) return null;\n  return String(raw);\n}\n\n/** Numbers arrive as strings. Anything unparseable becomes null, never NaN. */\nfunction toNumber(raw) {\n  if (raw === null || raw === undefined) return null;\n  const trimmed = String(raw).trim();\n  if (trimmed === '') return null;\n  const parsed = Number(trimmed);\n  return Number.isFinite(parsed) ? parsed : null;\n}\n\nconst inputItems = $input.all();\nif (inputItems.length !== 1) {\n  throw new Error(\n    `Normalize Analytics Data expected exactly 1 input item from Athena, received ${inputItems.length}.`,\n  );\n}\n\nconst response = inputItems[0].json ?? {};\n\nif (response.NextToken) {\n  throw new Error(\n    'Athena returned a paginated result (NextToken present). This workflow reads a single ' +\n      'page of up to 1000 rows and does not implement pagination. The analytics query is not ' +\n      'expected to exceed that; if it now does, add pagination before trusting this report.',\n  );\n}\n\nconst resultSet = response.ResultSet;\nif (!resultSet || !Array.isArray(resultSet.Rows)) {\n  throw new Error(\n    'Unexpected Athena response: ResultSet.Rows is missing. Check the Get Athena Results node output.',\n  );\n}\n\nconst columns = (resultSet.ResultSetMetadata?.ColumnInfo ?? []).map((column) => column?.Name);\nif (columns.length === 0) {\n  throw new Error('Unexpected Athena response: ResultSetMetadata.ColumnInfo is empty.');\n}\n\n// Athena prepends a header row whose values are the column names. It is metadata, not data.\nlet rows = resultSet.Rows;\nconst firstRowValues = (rows[0]?.Data ?? []).map(cellValue);\nconst firstRowIsHeader =\n  firstRowValues.length === columns.length &&\n  firstRowValues.every((value, index) => value === columns[index]);\nif (firstRowIsHeader) {\n  rows = rows.slice(1);\n}\n\nconst grouped = { year: [], month: [], week: [], day: [], '3h': [] };\nconst unknownLevels = new Set();\nlet rowCount = 0;\n\nfor (const row of rows) {\n  const cells = row?.Data ?? [];\n\n  const record = {};\n  columns.forEach((columnName, index) => {\n    record[columnName] = cellValue(cells[index]);\n  });\n\n  // Skip rows that carry no values at all rather than emitting a row of dashes.\n  if (Object.values(record).every((value) => value === null)) continue;\n\n  const level = record.level === null ? null : record.level.trim();\n  if (!level || !SUPPORTED_LEVELS.includes(level)) {\n    unknownLevels.add(String(record.level));\n    continue;\n  }\n\n  const normalized = {\n    level,\n    period: record.period === null ? null : record.period.trim(),\n  };\n  for (const column of NUMERIC_COLUMNS) {\n    normalized[column] = toNumber(record[column]);\n  }\n\n  grouped[level].push(normalized);\n  rowCount += 1;\n}\n\nif (unknownLevels.size > 0) {\n  throw new Error(\n    `Athena returned unsupported level value(s): ${[...unknownLevels].join(', ')}. ` +\n      `Supported levels are ${SUPPORTED_LEVELS.join(', ')}. ` +\n      'The analytics SQL and this node have drifted apart — update both together.',\n  );\n}\n\nif (rowCount === 0) {\n  throw new Error(\n    'Athena query succeeded but returned zero analytics rows. No Slack report was sent. ' +\n      'Check that the source tables have data for the current periods.',\n  );\n}\n\nreturn [{ json: grouped }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        -200
+      ],
+      "id": "a7c1e080-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Normalize Analytics Data"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Slack Payload\n//\n// Input : one item = analytics rows grouped by level (from Normalize Analytics Data).\n// Output: exactly one item = the complete Slack Incoming Webhook payload.\n//\n// This node only presents data: Block Kit structure, labels, number formatting and the\n// Europe/Kyiv report timestamp. It never recalculates a metric.\n\nconst REPORT_TIMEZONE = 'Europe/Kyiv';\nconst MISSING = '—';\nconst SLACK_MAX_BLOCKS = 50;\n\n// Rendering order inside every period. Two columns per row in Slack's section.fields.\nconst METRIC_FIELDS = [\n  { key: 'ftd', label: 'FTD', format: 'integer' },\n  { key: 'total_dep', label: 'Total Dep', format: 'integer' },\n  { key: 'in_out', label: 'In-Out', format: 'integer' },\n  { key: 'hold', label: 'Hold', format: 'percent' },\n  { key: 'reg2dep', label: 'Reg2Dep', format: 'percent' },\n  { key: 'ftd2std', label: 'Ftd2Std', format: 'percent' },\n  { key: 'ar_psp', label: 'AR PSP', format: 'percent' },\n  { key: 'ar_psp_deposits', label: 'AR PSP Deposits', format: 'percent' },\n];\n\nfunction toFiniteNumber(value) {\n  if (value === null || value === undefined) return null;\n  const parsed = typeof value === 'number' ? value : Number(String(value).trim());\n  return Number.isFinite(parsed) ? parsed : null;\n}\n\nfunction formatInteger(value) {\n  const parsed = toFiniteNumber(value);\n  if (parsed === null) return MISSING;\n  return Math.round(parsed).toLocaleString('en-US');\n}\n\nfunction formatPercent(value) {\n  const parsed = toFiniteNumber(value);\n  if (parsed === null) return MISSING;\n  return `${parsed.toFixed(1)}%`;\n}\n\nfunction formatMetric(row, field) {\n  return field.format === 'integer' ? formatInteger(row[field.key]) : formatPercent(row[field.key]);\n}\n\n/** Slack mrkdwn reserves these three characters. */\nfunction escapeMrkdwn(text) {\n  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n}\n\nfunction formatInTimezone(date, options) {\n  return new Intl.DateTimeFormat(options.locale ?? 'en-GB', {\n    timeZone: REPORT_TIMEZONE,\n    ...options.parts,\n  }).format(date);\n}\n\nconst inputItems = $input.all();\nif (inputItems.length !== 1) {\n  throw new Error(\n    `Build Slack Payload expected exactly 1 input item, received ${inputItems.length}.`,\n  );\n}\n\nconst grouped = inputItems[0].json ?? {};\n\nconst now = new Date();\nconst reportDate = formatInTimezone(now, {\n  parts: { day: '2-digit', month: 'short', year: 'numeric' },\n});\nconst reportTime = formatInTimezone(now, {\n  parts: { hour: '2-digit', minute: '2-digit', hour12: false },\n});\nconst currentMonthName = formatInTimezone(now, {\n  locale: 'en-US',\n  parts: { month: 'long' },\n}).toUpperCase();\n\nconst GROUPS = [\n  { key: 'year', heading: 'YEAR' },\n  { key: 'month', heading: 'MONTHS' },\n  { key: 'week', heading: `WEEKS — ${currentMonthName}` },\n  { key: 'day', heading: 'DAYS — CURRENT WEEK' },\n  { key: '3h', heading: '3H — LATEST DAY' },\n];\n\nfunction periodBlock(row) {\n  const period =\n    typeof row.period === 'string' && row.period.trim() !== '' ? row.period.trim() : MISSING;\n\n  return {\n    type: 'section',\n    text: { type: 'mrkdwn', text: `*${escapeMrkdwn(period)}*` },\n    fields: METRIC_FIELDS.map((field) => ({\n      type: 'mrkdwn',\n      text: `*${field.label}*\\n${formatMetric(row, field)}`,\n    })),\n  };\n}\n\nconst blocks = [\n  { type: 'header', text: { type: 'plain_text', text: '📊 Analytics Report', emoji: true } },\n  {\n    type: 'context',\n    elements: [\n      {\n        type: 'mrkdwn',\n        text: `${reportDate} • ${REPORT_TIMEZONE} • Updated ${reportTime}`,\n      },\n    ],\n  },\n];\n\nfor (const group of GROUPS) {\n  const rows = Array.isArray(grouped[group.key]) ? grouped[group.key] : [];\n  // A level with no rows is skipped rather than rendered as an empty heading.\n  if (rows.length === 0) continue;\n\n  blocks.push({ type: 'divider' });\n  blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*${group.heading}*` } });\n  for (const row of rows) {\n    blocks.push(periodBlock(row));\n  }\n}\n\n// Only the header and context blocks means every level came back empty.\nif (blocks.length <= 2) {\n  throw new Error(\n    'No analytics periods to report — every level was empty after normalization. ' +\n      'No Slack report was sent.',\n  );\n}\n\nif (blocks.length > SLACK_MAX_BLOCKS) {\n  throw new Error(\n    `Slack payload has ${blocks.length} blocks, above Slack's limit of ${SLACK_MAX_BLOCKS}. ` +\n      'Athena returned more periods than this report layout allows.',\n  );\n}\n\nreturn [\n  {\n    json: {\n      text: `Analytics Report — ${reportDate}`,\n      blocks,\n    },\n  },\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        -200
+      ],
+      "id": "a7c1e090-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Build Slack Payload"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.slackWebhookUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        920,
+        -200
+      ],
+      "id": "a7c1e100-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "HTTP Request — Send Analytics to Slack",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "errorMessage": "=Athena query {{ $json.QueryExecution.QueryExecutionId }} ended in state {{ $json.QueryExecution.Status.State }}. Reason: {{ $json.QueryExecution.Status.StateChangeReason || 'no StateChangeReason returned by Athena' }}. No Slack report was sent."
+      },
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        260,
+        400
+      ],
+      "id": "a7c1e110-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Athena Query Failed"
+    },
+    {
+      "parameters": {
+        "errorMessage": "=Athena query {{ $('Execute Athena Query').first().json.QueryExecutionId }} did not finish within the polling budget of 120 polls x 5 s (~10 minutes). Last observed state: {{ $json.QueryExecution.Status.State }}. No Slack report was sent."
+      },
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        480,
+        300
+      ],
+      "id": "a7c1e120-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Athena Poll Timeout"
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Execute Athena Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Athena Query": {
+      "main": [
+        [
+          {
+            "node": "Wait 5s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 5s": {
+      "main": [
+        [
+          {
+            "node": "Poll Athena Query Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll Athena Query Status": {
+      "main": [
+        [
+          {
+            "node": "Athena Query State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Athena Query State": {
+      "main": [
+        [
+          {
+            "node": "Get Athena Results",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Poll Attempts Remaining?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Poll Attempts Remaining?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Athena Query Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Athena Query Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Athena Query Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll Attempts Remaining?": {
+      "main": [
+        [
+          {
+            "node": "Wait 5s",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Athena Poll Timeout",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Athena Results": {
+      "main": [
+        [
+          {
+            "node": "Normalize Analytics Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Analytics Data": {
+      "main": [
+        [
+          {
+            "node": "Build Slack Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Slack Payload": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request — Send Analytics to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Kyiv",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true
+  }
+}

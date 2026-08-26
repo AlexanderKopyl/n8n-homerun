@@ -83,6 +83,40 @@ data/
 
 The `data/` directory is ignored by Git.
 
+Workflow definitions are kept separately, in Git:
+
+```text
+workflows/   # workflow JSON, committed
+```
+
+## Workflows
+
+Workflows are authored as JSON files in `workflows/` and imported into n8n:
+
+```text
+Workflows -> Import from File
+```
+
+After editing a workflow in the UI, download it and save it back over the file in `workflows/`.
+
+Credentials are never stored in workflow JSON. Create them once in the UI under `Settings -> Credentials`.
+
+Full conventions, JSON shape, and webhook URL rules: [docs/workflows/authoring.md](docs/workflows/authoring.md).
+
+### Available workflows
+
+```text
+analytics-slack-report.json   Scheduled Athena query -> Slack Block Kit report
+```
+
+Configuration and testing: [docs/workflows/analytics-slack-report.md](docs/workflows/analytics-slack-report.md).
+
+It is self-contained: all deployment settings live in a `Config` node inside the workflow, so
+it imports and runs on any n8n instance without touching this project's `.env` or
+`docker-compose.yml`. Athena is reached by assuming a cross-account role: the n8n `AWS (Assume Role)` credential
+calls `sts:AssumeRole` with the IAM user's keys and signs Athena with the temporary
+credentials. Created once per instance. The Slack webhook is filled in on the instance and never committed.
+
 ## Migrating from old Docker volumes
 
 If this project was previously using Docker named volumes, copy existing n8n files into `./data/n8n` before relying on the local directory setup.
