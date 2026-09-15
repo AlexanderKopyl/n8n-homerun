@@ -1,7 +1,7 @@
 # Analytics Slack Report
 
 Scheduled workflow that runs one Athena query and posts the result to a Slack Incoming
-Webhook as a Block Kit message.
+Webhook as Block Kit messages — one message per brand.
 
 Workflow file: [workflows/analytics-slack-report.json](../../workflows/analytics-slack-report.json)
 
@@ -36,8 +36,11 @@ Schedule Trigger
        fallback   -> Athena Query Failed   (Stop and Error)
 ```
 
-Only the `SUCCEEDED` branch reaches Slack, and only one node connects to the Slack request,
-so a successful execution delivers exactly one message.
+Only the `SUCCEEDED` branch reaches Slack. From `Normalize Analytics Data` onward the chain
+carries **one item per brand**, and n8n runs an HTTP Request node once per input item, so a
+successful execution delivers one message per brand — currently two, `LACASINO` and
+`NORMCASINO`, both to the same `slackWebhookUrl`. Adding a brand to the source data adds a
+message; nothing in the workflow hardcodes the brand list.
 
 ## Setup on a new n8n instance
 
@@ -147,11 +150,25 @@ The SQL lives in the `Execute Athena Query` node, in the JSON body of the
 `StartQueryExecution` request. It is the single source of truth for period generation,
 aggregation, metric calculation and ordering — nothing is recalculated in JavaScript.
 
-Output contract, one row per period:
+Output contract, one row per brand per period, ordered by `brand` then `sort_order`:
 
 ```text
-level  period  ftd  total_dep  in_out  hold  reg2dep  ftd2std  ar_psp  ar_psp_deposits
+brand  level  period  ftd  std  total_dep  in_out  ggr  ngr  margin_pct
+                      hold  reg2dep  ftd2std  ar_psp  ar_psp_deposits
 ```
+
+`brand` drives the message split: each distinct value becomes its own Slack message. The
+query excludes `SBNORM` in its final `WHERE` clause — it reports zeros across every metric
+and is not part of this report. To bring it back, or to drop another brand, edit that one
+line:
+
+```sql
+WHERE m.brand NOT IN ('SBNORM')
+```
+
+Every metric is aggregated per brand: each CTE groups by brand, and the `ph2_metrics` and
+`hour_3_ph2` joins match on brand as well as period, so payment rates never leak across
+brands.
 
 `level` is one of:
 
@@ -168,27 +185,43 @@ completed days followed by today's 3-hour breakdown. This is intended, not a gap
 
 ## Report layout
 
-```text
-📊 Analytics Report
-26 Aug 2026 • Europe/Kyiv • Updated 09:45
-
-YEAR / MONTHS / WEEKS — <CURRENT MONTH> / DAYS — CURRENT WEEK / 3H — LATEST DAY
-```
-
-Each period is one Block Kit `section` with eight `fields` in fixed order:
+One message per brand. Each message carries two Block Kit `table` blocks over the same
+period rows, so a period lines up across both:
 
 ```text
-FTD      | Total Dep
-In-Out   | Hold
-Reg2Dep  | Ftd2Std
-AR PSP   | AR PSP Deposits
+📊 Analytics Report — NORMCASINO
+15 Sep 2026 • Europe/Kyiv • Updated 09:45
+
+Volume
+Period              | FTD | STD | Total Dep | In-Out | GGR | NGR | Margin
+YEAR · 2026         | ...
+MONTH · August 2026 | ...
+WEEK · Week 37 · 07–13 Sep | ...
+DAY · 07 Sep · Monday      | ...
+3H · 00:00–03:00           | ...
+
+Conversion
+Period              | Hold | Reg2Dep | Ftd2Std | AR PSP | AR PSP Deposits
+YEAR · 2026         | ...
 ```
 
-`ftd`, `total_dep` and `in_out` are formatted with thousands separators; the other five as
+**Why two tables.** Slack caps a `table` block at 10 columns and 100 rows. Twelve metrics
+plus the period label need 13 columns, so the metrics are split by kind: absolute volume in
+the first table, percentage rates in the second. Both tables are in the same message, so the
+brand still produces exactly one Slack call.
+
+Rows are built from `levels` in fixed order — `year`, `month`, `week`, `day`, `3h` — each
+prefixed with its level, e.g. `MONTH · August 2026`. A level that returns no rows
+contributes no rows rather than a row of dashes.
+
+`ftd`, `std`, `total_dep`, `in_out`, `ggr` and `ngr` are formatted with thousands
+separators; `margin_pct`, `hold`, `reg2dep`, `ftd2std`, `ar_psp` and `ar_psp_deposits` as
 percentages with exactly one decimal. NULL, missing or unparseable values render as `—`
-rather than failing. A level that returns no rows is skipped instead of printing an empty
-heading. The report date, time and current month name are generated at run time in
-`Europe/Kyiv`.
+rather than failing. The report date and time are generated at run time in `Europe/Kyiv` and
+are identical across the brand messages of one execution.
+
+The payload item also carries a top-level `brand` field for debugging in the n8n UI. The
+Slack node sends only `text` and `blocks`, so that field never reaches Slack.
 
 ## Failure behaviour
 
@@ -198,6 +231,9 @@ heading. The report date, time and current month name are generated at run time 
 | Unrecognised Athena state | Same as `FAILED`. |
 | Query still running after 120 polls (~10 min) | `Athena Poll Timeout` stops the run and reports the last observed state. No Slack message. |
 | Zero analytics rows | `Normalize Analytics Data` throws. No Slack message. |
+| Athena result has no `brand` column | `Normalize Analytics Data` throws — the SQL and the node have drifted apart. No Slack message. |
+| A row has an empty `brand` | `Normalize Analytics Data` throws, naming the level and period. No Slack message. |
+| One brand's message fails at Slack | That brand's HTTP item fails after its retries and the execution fails. Messages for brands already sent stay sent — Slack delivery is not atomic across brands. |
 | Athena result exceeds one page of 1000 rows | `Normalize Analytics Data` throws rather than silently reporting partial data. |
 | Athena returns an unsupported `level` | `Normalize Analytics Data` throws, naming the value. |
 | `sts:AssumeRole` is denied or the External ID is wrong | The Athena node fails with `Failed to assume role: STS AssumeRole failed: 403 ...`. No Slack message. |
@@ -225,38 +261,44 @@ aws athena start-query-execution --query-string "SELECT 1" \
 ```
 
 **2. Normalization.** Re-enable `Normalize Analytics Data` and run again. Its output must be
-a single item shaped like:
+one item per brand, each shaped like:
 
 ```json
-{ "year": [], "month": [], "week": [], "day": [], "3h": [] }
+{ "brand": "NORMCASINO", "levels": { "year": [], "month": [], "week": [], "day": [], "3h": [] } }
 ```
 
-with rows in Athena's order — not sorted alphabetically.
+with rows in Athena's order — not sorted alphabetically. Check the item count matches the
+number of brands you expect, and that `SBNORM` is absent.
 
 **3. Slack payload, without delivery.** Disable
 `HTTP Request — Send Analytics to Slack`, run the workflow, and open the output of
-`Build Slack Payload`. It must be exactly one item:
+`Build Slack Payload`. It must be one item per brand:
 
 ```json
-{ "text": "Analytics Report — ...", "blocks": [] }
+{ "brand": "NORMCASINO", "text": "Analytics Report NORMCASINO — ...", "blocks": [] }
 ```
 
 Paste `blocks` into [Slack's Block Kit Builder](https://app.slack.com/block-kit-builder) to
 preview the rendering. Block Kit Builder never contacts your webhook.
 
 **4. Delivery.** Put a **test channel's** webhook in `Config.slackWebhookUrl`, re-enable the
-Slack node, and run once. Only then switch it to the production webhook.
+Slack node, and run once. The channel must receive one message per brand — check the Slack
+node reports as many items out as in. Only then switch it to the production webhook.
 
 Never put a real webhook URL into a test fixture, a Code node, or this file.
 
 ## Known limitations
 
-- Reads a single page of up to 1000 Athena rows. The query returns roughly 25, so pagination
-  is not implemented; the workflow fails loudly rather than truncating if that ever changes.
+- Reads a single page of up to 1000 Athena rows. The query returns roughly 25 rows per brand,
+  so pagination is not implemented; the workflow fails loudly rather than truncating if that
+  ever changes. Watch this if the brand list grows substantially.
 - Polling is bounded at 120 attempts of 5 seconds. Longer queries need the limit raised in
   `Poll Attempts Remaining?`.
-- Slack caps a message at 50 blocks. The layout produces about 37 at most; beyond that
-  `Build Slack Payload` throws instead of sending a truncated report.
+- Slack caps a message at 50 blocks. The layout produces 6 per brand message, so the block
+  cap is not a practical concern; the table's own 10-column and 100-row caps are checked in
+  `Build Slack Payload`, which throws instead of sending a truncated report.
+- All brands post to the same webhook. Per-brand channels would need a brand→webhook map in
+  `Config` and an expression on the Slack node's URL.
 - `Wait 5s` stays under n8n's 65-second threshold, so the execution is held in memory rather
   than being suspended and resumed.
 - The Slack webhook lives in the `Config` node on the instance, not in an n8n credential —
