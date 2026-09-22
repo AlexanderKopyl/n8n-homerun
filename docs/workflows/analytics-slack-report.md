@@ -158,13 +158,15 @@ brand  level  period  ftd  std  total_dep  in_out  ggr  ngr  margin_pct
 ```
 
 `brand` drives the message split: each distinct value becomes its own Slack message. The
-query excludes `SBNORM` in its final `WHERE` clause — it reports zeros across every metric
-and is not part of this report. To bring it back, or to drop another brand, edit that one
-line:
+query excludes three brands in its final `WHERE` clause. To restore one, or to drop another
+brand, edit that one line — it is the only place in the workflow where a brand is named:
 
 ```sql
-WHERE m.brand NOT IN ('SBNORM')
+WHERE m.brand NOT IN ('SBNORM', 'VOLKCASINO', 'IKRACASINO')
 ```
+
+Each name removed from the report is one fewer Slack message; a brand that appears in the
+source data and is not listed here becomes a message on its own.
 
 Every metric is aggregated per brand: each CTE groups by brand, and the `ph2_metrics` and
 `hour_3_ph2` joins match on brand as well as period, so payment rates never leak across
@@ -268,7 +270,7 @@ one item per brand, each shaped like:
 ```
 
 with rows in Athena's order — not sorted alphabetically. Check the item count matches the
-number of brands you expect, and that `SBNORM` is absent.
+number of brands you expect, and that the excluded brands are absent.
 
 **3. Slack payload, without delivery.** Disable
 `HTTP Request — Send Analytics to Slack`, run the workflow, and open the output of
