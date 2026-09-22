@@ -1,0 +1,728 @@
+{
+  "name": "VIP Deposit Alert",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "30 4 * * *"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -1100,
+        0
+      ],
+      "id": "c5e1a010-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Schedule Trigger",
+      "notes": "04:30 Europe/Kyiv daily, after the nightly billing load. Set the real schedule here."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "d7f30200-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+              "name": "athenaRegion",
+              "value": "eu-central-1",
+              "type": "string"
+            },
+            {
+              "id": "d7f30210-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+              "name": "athenaDatabase",
+              "value": "operator_ro_normcasino",
+              "type": "string"
+            },
+            {
+              "id": "d7f30220-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+              "name": "athenaCatalog",
+              "value": "AwsDataCatalog",
+              "type": "string"
+            },
+            {
+              "id": "d7f30230-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+              "name": "athenaWorkgroup",
+              "value": "primary",
+              "type": "string"
+            },
+            {
+              "id": "d7f30240-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+              "name": "athenaOutputLocation",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "d7f30250-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+              "name": "slackWebhookUrl",
+              "value": "https://hooks.slack.com/services/REPLACE/WITH/YOUR-WEBHOOK",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -880,
+        0
+      ],
+      "id": "c5e1a130-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Config",
+      "notes": "Edit these after import. slackWebhookUrl is a secret: fill it in here on the n8n instance and strip it again before exporting the workflow."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://athena.{{ $('Config').first().json.athenaRegion }}.amazonaws.com/",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "awsAssumeRole",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-amz-json-1.1"
+            },
+            {
+              "name": "X-Amz-Target",
+              "value": "AmazonAthena.StartQueryExecution"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"QueryString\": \"WITH\\n-- VIP deposit attempts over three days: D-3, D-2, D-1 (today is excluded).\\n-- Three days, not two: the extra day builds yesterday's 48h window, which is what\\n-- suppresses a repeat alert for a player who was already reported yesterday.\\ndep AS (\\n    SELECT\\n        r.player_id,\\n        r.brand,\\n        r.create_date,\\n        r.transaction_status,\\n        r.cnt_transaction,\\n        r.amount_eur,\\n        r.currency,\\n        r.country,\\n        r.risk_casino_segment,\\n        r.decline_reason_groupname,\\n        r.decline_reason_message,\\n        r.method_transaction,\\n        r.provider,\\n        r.payment_method_type\\n    FROM operator_ro_normcasino.agg_billing_report_hyper r\\n    WHERE r.create_date >= DATE_ADD('day', -3, CURRENT_DATE)\\n      AND r.create_date < CURRENT_DATE\\n      AND r.transaction_type = 'deposit'\\n      -- NULL is treated as \\\"not a test\\\", so a missing flag never hides a real VIP.\\n      AND COALESCE(r.is_test, false) = false\\n      -- Brands excluded here are not alerted on. Same list as the analytics report.\\n      AND r.brand NOT IN ('SBNORM', 'VOLKCASINO', 'IKRACASINO')\\n      -- The one line that defines \\\"who is VIP\\\".\\n      AND r.risk_casino_segment IN ('VIP-Silver', 'VIP-Gold', 'VIP-Platinum')\\n),\\n-- Collapse to player x brand x day. New is the trigger, Fail is context.\\ndep_day AS (\\n    SELECT\\n        d.player_id,\\n        d.brand,\\n        d.create_date,\\n        SUM(CASE WHEN d.transaction_status = 'Success' THEN d.cnt_transaction ELSE 0 END) AS success_cnt,\\n        SUM(CASE WHEN d.transaction_status = 'New' THEN d.cnt_transaction ELSE 0 END) AS new_cnt,\\n        SUM(CASE WHEN d.transaction_status = 'Fail' THEN d.cnt_transaction ELSE 0 END) AS fail_cnt,\\n        SUM(CASE WHEN d.transaction_status = 'New' THEN d.amount_eur ELSE 0 END) AS new_amount_eur,\\n        SUM(CASE WHEN d.transaction_status = 'Fail' THEN d.amount_eur ELSE 0 END) AS fail_amount_eur\\n    FROM dep d\\n    GROUP BY d.player_id, d.brand, d.create_date\\n),\\n-- Two 48h windows shifted by a day: current [D-2, today) and yesterday's [D-3, D-1).\\nwindows AS (\\n    SELECT\\n        dd.player_id,\\n        dd.brand,\\n        SUM(CASE WHEN dd.create_date >= DATE_ADD('day', -2, CURRENT_DATE) THEN dd.new_cnt ELSE 0 END) AS new_cnt_cur,\\n        SUM(CASE WHEN dd.create_date >= DATE_ADD('day', -2, CURRENT_DATE) THEN dd.success_cnt ELSE 0 END) AS success_cnt_cur,\\n        SUM(CASE WHEN dd.create_date >= DATE_ADD('day', -2, CURRENT_DATE) THEN dd.fail_cnt ELSE 0 END) AS fail_cnt_cur,\\n        SUM(CASE WHEN dd.create_date >= DATE_ADD('day', -2, CURRENT_DATE) THEN dd.new_amount_eur ELSE 0 END) AS new_amount_eur_cur,\\n        SUM(CASE WHEN dd.create_date >= DATE_ADD('day', -2, CURRENT_DATE) THEN dd.fail_amount_eur ELSE 0 END) AS fail_amount_eur_cur,\\n        SUM(CASE WHEN dd.create_date < DATE_ADD('day', -1, CURRENT_DATE) THEN dd.new_cnt ELSE 0 END) AS new_cnt_prev,\\n        SUM(CASE WHEN dd.create_date < DATE_ADD('day', -1, CURRENT_DATE) THEN dd.success_cnt ELSE 0 END) AS success_cnt_prev\\n    FROM dep_day dd\\n    GROUP BY dd.player_id, dd.brand\\n),\\n-- Alert condition plus deduplication: only players who became stuck today.\\ncandidates AS (\\n    SELECT\\n        w.player_id,\\n        w.brand,\\n        w.new_cnt_cur,\\n        w.fail_cnt_cur,\\n        w.new_amount_eur_cur,\\n        w.fail_amount_eur_cur\\n    FROM windows w\\n    WHERE w.new_cnt_cur > 0                                     -- a pending deposit exists\\n      AND w.success_cnt_cur = 0                                 -- nothing was approved\\n      AND NOT (w.new_cnt_prev > 0 AND w.success_cnt_prev = 0)   -- and it did not already hold yesterday\\n),\\n-- The last unfinished attempt: what the player paid with, and through whom.\\nlast_new AS (\\n    SELECT\\n        ln.player_id,\\n        ln.brand,\\n        ln.create_date,\\n        ln.currency,\\n        ln.country,\\n        ln.risk_casino_segment,\\n        ln.method_transaction,\\n        ln.provider,\\n        ln.payment_method_type\\n    FROM (\\n        SELECT\\n            d.player_id,\\n            d.brand,\\n            d.create_date,\\n            d.currency,\\n            d.country,\\n            d.risk_casino_segment,\\n            d.method_transaction,\\n            d.provider,\\n            d.payment_method_type,\\n            ROW_NUMBER() OVER (\\n                PARTITION BY d.player_id, d.brand\\n                ORDER BY d.create_date DESC, d.amount_eur DESC\\n            ) AS rn\\n        FROM dep d\\n        WHERE d.create_date >= DATE_ADD('day', -2, CURRENT_DATE)\\n          AND d.transaction_status = 'New'\\n    ) ln\\n    WHERE ln.rn = 1\\n),\\n-- Context only: the last provider decline in the same window, if there was one.\\n-- A New transaction carries no decline reason, and the reason is what a manager acts on.\\nlast_fail AS (\\n    SELECT\\n        lf.player_id,\\n        lf.brand,\\n        lf.create_date AS fail_date,\\n        lf.decline_reason_groupname,\\n        lf.decline_reason_message\\n    FROM (\\n        SELECT\\n            d.player_id,\\n            d.brand,\\n            d.create_date,\\n            d.decline_reason_groupname,\\n            d.decline_reason_message,\\n            ROW_NUMBER() OVER (\\n                PARTITION BY d.player_id, d.brand\\n                ORDER BY d.create_date DESC, d.amount_eur DESC\\n            ) AS rn\\n        FROM dep d\\n        WHERE d.create_date >= DATE_ADD('day', -2, CURRENT_DATE)\\n          AND d.transaction_status = 'Fail'\\n    ) lf\\n    WHERE lf.rn = 1\\n)\\nSELECT\\n    c.player_id,\\n    c.brand,\\n    n.risk_casino_segment AS vip_segment,\\n    CAST(c.new_cnt_cur AS BIGINT) AS pending_attempts_48h,\\n    -- Cast through double: ROUND on decimal(38,18) hits the precision limit.\\n    ROUND(CAST(c.new_amount_eur_cur AS DOUBLE), 2) AS pending_amount_eur_48h,\\n    CAST(n.create_date AS VARCHAR) AS last_attempt_date,\\n    n.currency AS currency,\\n    n.country AS country,\\n    n.method_transaction AS payment_method,\\n    n.provider AS provider,\\n    n.payment_method_type AS method_type,\\n    -- Context: whether provider declines happened alongside, for how much, and why.\\n    CAST(c.fail_cnt_cur AS BIGINT) AS declined_attempts_48h,\\n    ROUND(CAST(c.fail_amount_eur_cur AS DOUBLE), 2) AS declined_amount_eur_48h,\\n    f.decline_reason_groupname AS decline_group,\\n    f.decline_reason_message AS decline_message\\nFROM candidates c\\nJOIN last_new n\\n  ON n.player_id = c.player_id\\n AND n.brand = c.brand\\nLEFT JOIN last_fail f\\n  ON f.player_id = c.player_id\\n AND f.brand = c.brand\\n-- Ordered by everything the player tried to deposit in 48h, pending and declined together.\\n-- Pending alone floated small amounts to the top and buried a VIP with 32 declines on\\n-- 835 EUR in sixth place \\u2014 that is the player to call first.\\nORDER BY (c.new_amount_eur_cur + c.fail_amount_eur_cur) DESC, c.player_id\",\n  \"QueryExecutionContext\": { \"Database\": \"{{ $('Config').first().json.athenaDatabase }}\", \"Catalog\": \"{{ $('Config').first().json.athenaCatalog || 'AwsDataCatalog' }}\" },\n  \"WorkGroup\": \"{{ $('Config').first().json.athenaWorkgroup || 'primary' }}\",\n  \"ClientRequestToken\": \"n8n-vip-deposit-alert-execution-{{ $execution.id }}\"\n  {{ $('Config').first().json.athenaOutputLocation ? ', \"ResultConfiguration\": { \"OutputLocation\": \"' + $('Config').first().json.athenaOutputLocation + '\" }' : '' }}\n}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -660,
+        0
+      ],
+      "id": "c5e1a020-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Execute Athena Query",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "ClientRequestToken is derived from the execution id, so a retry of this node rejoins the same Athena query instead of starting a second one."
+    },
+    {
+      "parameters": {
+        "amount": 5,
+        "unit": "seconds"
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -440,
+        0
+      ],
+      "id": "c5e1a030-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Wait 5s",
+      "webhookId": "d7f39000-2b3c-4d5e-9f60-a1b2c3d4e5f6"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://athena.{{ $('Config').first().json.athenaRegion }}.amazonaws.com/",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "awsAssumeRole",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-amz-json-1.1"
+            },
+            {
+              "name": "X-Amz-Target",
+              "value": "AmazonAthena.GetQueryExecution"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"QueryExecutionId\": \"{{ $('Execute Athena Query').first().json.QueryExecutionId }}\"\n}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -220,
+        0
+      ],
+      "id": "c5e1a040-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Poll Athena Query Status",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "d7f30010-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "SUCCEEDED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Succeeded"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "d7f30020-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "QUEUED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Queued"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "d7f30030-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "RUNNING",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Running"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "d7f30040-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "FAILED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Failed"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "d7f30050-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "CANCELLED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Cancelled"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "Unexpected State"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        0,
+        0
+      ],
+      "id": "c5e1a050-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Athena Query State"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d7f30060-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+              "leftValue": "={{ $runIndex }}",
+              "rightValue": 120,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        260,
+        180
+      ],
+      "id": "c5e1a060-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Poll Attempts Remaining?",
+      "notes": "true -> wait and poll again; false -> give up after 120 polls (~10 min)"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://athena.{{ $('Config').first().json.athenaRegion }}.amazonaws.com/",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "awsAssumeRole",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-amz-json-1.1"
+            },
+            {
+              "name": "X-Amz-Target",
+              "value": "AmazonAthena.GetQueryResults"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"QueryExecutionId\": \"{{ $('Execute Athena Query').first().json.QueryExecutionId }}\",\n  \"MaxResults\": 1000\n}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        260,
+        -200
+      ],
+      "id": "c5e1a070-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Get Athena Results",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize VIP Deposit Data\n//\n// Input : one item = the raw Athena GetQueryResults response.\n// Output: exactly one item = { count, candidates }, candidates in Athena's own order.\n//\n// This node does NOT decide anything. Athena is the source of truth for the alert\n// condition, the deduplication against yesterday, and the ordering.\n//\n// Zero candidates is a normal outcome, not a failure: the chain has an explicit\n// \"nothing stuck\" branch. Only a malformed response throws.\n\nconst NUMERIC_COLUMNS = [\n  'pending_attempts_48h',\n  'pending_amount_eur_48h',\n  'declined_attempts_48h',\n  'declined_amount_eur_48h',\n];\n\nconst TEXT_COLUMNS = [\n  'player_id',\n  'brand',\n  'vip_segment',\n  'last_attempt_date',\n  'currency',\n  'country',\n  'payment_method',\n  'provider',\n  'method_type',\n  'decline_group',\n  'decline_message',\n];\n\n/** Athena returns every value as a string, or omits VarCharValue entirely for NULL. */\nfunction cellValue(cell) {\n  if (cell === null || cell === undefined) return null;\n  const raw = cell.VarCharValue;\n  if (raw === null || raw === undefined) return null;\n  return String(raw);\n}\n\n/** Numbers arrive as strings. Anything unparseable becomes null, never NaN. */\nfunction toNumber(raw) {\n  if (raw === null || raw === undefined) return null;\n  const trimmed = String(raw).trim();\n  if (trimmed === '') return null;\n  const parsed = Number(trimmed);\n  return Number.isFinite(parsed) ? parsed : null;\n}\n\nfunction toText(raw) {\n  if (raw === null || raw === undefined) return null;\n  const trimmed = String(raw).trim();\n  return trimmed === '' ? null : trimmed;\n}\n\nconst inputItems = $input.all();\nif (inputItems.length !== 1) {\n  throw new Error(\n    `Normalize VIP Deposit Data expected exactly 1 input item from Athena, received ${inputItems.length}.`,\n  );\n}\n\nconst response = inputItems[0].json ?? {};\n\nif (response.NextToken) {\n  throw new Error(\n    'Athena returned a paginated result (NextToken present). This workflow reads a single ' +\n      'page of up to 1000 rows and does not implement pagination. A VIP alert is not expected ' +\n      'to reach 1000 players in 48 hours; if it now does, the alert condition is wrong or the ' +\n      'segment list has drifted — investigate before trusting this run.',\n  );\n}\n\nconst resultSet = response.ResultSet;\nif (!resultSet || !Array.isArray(resultSet.Rows)) {\n  throw new Error(\n    'Unexpected Athena response: ResultSet.Rows is missing. Check the Get Athena Results node output.',\n  );\n}\n\nconst columns = (resultSet.ResultSetMetadata?.ColumnInfo ?? []).map((column) => column?.Name);\nif (columns.length === 0) {\n  throw new Error('Unexpected Athena response: ResultSetMetadata.ColumnInfo is empty.');\n}\n\nconst missingColumns = [...NUMERIC_COLUMNS, ...TEXT_COLUMNS].filter(\n  (column) => !columns.includes(column),\n);\nif (missingColumns.length > 0) {\n  throw new Error(\n    `Athena result is missing column(s): ${missingColumns.join(', ')}. The alert SQL and this ` +\n      'node have drifted apart — update both together.',\n  );\n}\n\n// Athena prepends a header row whose values are the column names. It is metadata, not data.\nlet rows = resultSet.Rows;\nconst firstRowValues = (rows[0]?.Data ?? []).map(cellValue);\nconst firstRowIsHeader =\n  firstRowValues.length === columns.length &&\n  firstRowValues.every((value, index) => value === columns[index]);\nif (firstRowIsHeader) {\n  rows = rows.slice(1);\n}\n\nconst candidates = [];\n\nfor (const row of rows) {\n  const cells = row?.Data ?? [];\n\n  const record = {};\n  columns.forEach((columnName, index) => {\n    record[columnName] = cellValue(cells[index]);\n  });\n\n  // Skip rows that carry no values at all rather than alerting on a row of dashes.\n  if (Object.values(record).every((value) => value === null)) continue;\n\n  const candidate = {};\n  for (const column of TEXT_COLUMNS) candidate[column] = toText(record[column]);\n  for (const column of NUMERIC_COLUMNS) candidate[column] = toNumber(record[column]);\n\n  if (!candidate.player_id) {\n    throw new Error(\n      'Athena returned a candidate row without a player_id. Every alert line has to name the ' +\n        'player a manager is supposed to call.',\n    );\n  }\n\n  candidates.push(candidate);\n}\n\n// One item, always. The \"no candidates\" branch downstream needs something to run on.\nreturn [{ json: { count: candidates.length, candidates } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        -200
+      ],
+      "id": "c5e1a080-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Normalize VIP Deposit Data"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d7f30070-2b3c-4d5e-9f60-a1b2c3d4e5f6",
+              "leftValue": "={{ $json.count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        700,
+        -200
+      ],
+      "id": "c5e1a090-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Stuck VIPs Found?",
+      "notes": "true -> alert digest; false -> all-clear message. Zero candidates is a normal night, not a failure."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build VIP Alert Payload\n//\n// Input : one item = { count, candidates } from Normalize VIP Deposit Data, count > 0.\n// Output: one item = the complete Slack Incoming Webhook payload for the digest message.\n//\n// This node only presents data: Block Kit structure, labels, number formatting and the\n// Europe/Kyiv alert timestamp. It never re-evaluates the alert condition.\n//\n// Layout: one Block Kit `table` listing every stuck player in Athena's order (largest\n// total attempted amount first — that is the call order), followed by the last provider\n// decline for the players that had one. Decline messages are free text from the provider\n// and do not fit a table cell, which is why they sit below it.\n\nconst REPORT_TIMEZONE = 'Europe/Kyiv';\nconst MISSING = '—';\n\n// Slack's own limits for a table block.\nconst SLACK_MAX_TABLE_ROWS = 100;\nconst SLACK_MAX_TABLE_COLUMNS = 10;\n\n// How much of the decline list a single message carries before it is cut short.\nconst MAX_DECLINE_LINES = 10;\nconst MAX_DECLINE_MESSAGE_CHARS = 120;\n\n// Column order after the leading \"Player\" column is the order here.\nconst COLUMNS = [\n  { key: 'player_id', label: 'Player', format: 'text', align: 'left' },\n  { key: 'brand', label: 'Brand', format: 'text', align: 'left' },\n  { key: 'vip_segment', label: 'Segment', format: 'segment', align: 'left' },\n  { key: 'pending_attempts_48h', label: 'Pending', format: 'integer', align: 'right' },\n  { key: 'pending_amount_eur_48h', label: 'Pending €', format: 'integer', align: 'right' },\n  { key: 'declined_attempts_48h', label: 'Declined', format: 'integer', align: 'right' },\n  { key: 'declined_amount_eur_48h', label: 'Declined €', format: 'integer', align: 'right' },\n  { key: 'payment_method', label: 'Method', format: 'method', align: 'left' },\n  { key: 'last_attempt_date', label: 'Last try', format: 'timestamp', align: 'left' },\n];\n\nconst MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];\n\nfunction toFiniteNumber(value) {\n  if (value === null || value === undefined) return null;\n  const parsed = typeof value === 'number' ? value : Number(String(value).trim());\n  return Number.isFinite(parsed) ? parsed : null;\n}\n\nfunction formatInteger(value) {\n  const parsed = toFiniteNumber(value);\n  if (parsed === null) return MISSING;\n  return Math.round(parsed).toLocaleString('en-US');\n}\n\nfunction formatText(value) {\n  return typeof value === 'string' && value.trim() !== '' ? value.trim() : MISSING;\n}\n\n/** \"VIP-Platinum\" is the segment name; the table already says these are VIPs. */\nfunction formatSegment(value) {\n  const text = formatText(value);\n  return text === MISSING ? text : text.replace(/^VIP[-\\s]?/i, '');\n}\n\n/** Method and provider are two halves of one answer: what was used, and through whom. */\nfunction formatMethod(candidate) {\n  const method = formatText(candidate.payment_method);\n  const provider = formatText(candidate.provider);\n  if (method === MISSING && provider === MISSING) return MISSING;\n  if (provider === MISSING) return method;\n  if (method === MISSING) return provider;\n  return `${method} / ${provider}`;\n}\n\n/**\n * Athena hands back the raw timestamp as a string. Shorten it to the day and minute the\n * attempt happened; the year is never useful in a 48-hour window.\n */\nfunction formatTimestamp(value) {\n  const text = formatText(value);\n  if (text === MISSING) return text;\n  const match = text.match(/^(\\d{4})-(\\d{2})-(\\d{2})(?:[ T](\\d{2}):(\\d{2}))?/);\n  if (!match) return text;\n  const [, , month, day, hour, minute] = match;\n  const monthLabel = MONTHS[Number(month) - 1] ?? month;\n  const dayLabel = `${day} ${monthLabel}`;\n  return hour === undefined ? dayLabel : `${dayLabel} ${hour}:${minute}`;\n}\n\nfunction formatCell(candidate, column) {\n  switch (column.format) {\n    case 'integer':\n      return formatInteger(candidate[column.key]);\n    case 'segment':\n      return formatSegment(candidate[column.key]);\n    case 'method':\n      return formatMethod(candidate);\n    case 'timestamp':\n      return formatTimestamp(candidate[column.key]);\n    default:\n      return formatText(candidate[column.key]);\n  }\n}\n\n/** Table cells are raw_text: Slack renders them verbatim, so no mrkdwn escaping. */\nfunction cell(text) {\n  return { type: 'raw_text', text: String(text) };\n}\n\n/** Decline text comes from the provider, so it does reach mrkdwn and does need escaping. */\nfunction escapeMrkdwn(text) {\n  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n}\n\nfunction truncate(text, limit) {\n  const value = String(text);\n  return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`;\n}\n\nfunction formatInTimezone(date, parts) {\n  return new Intl.DateTimeFormat('en-GB', { timeZone: REPORT_TIMEZONE, ...parts }).format(date);\n}\n\nif (COLUMNS.length > SLACK_MAX_TABLE_COLUMNS) {\n  throw new Error(\n    `The candidate table needs ${COLUMNS.length} columns, above Slack's limit of ` +\n      `${SLACK_MAX_TABLE_COLUMNS}. Remove a column or fold two of them together.`,\n  );\n}\n\nconst inputItems = $input.all();\nif (inputItems.length !== 1) {\n  throw new Error(\n    `Build VIP Alert Payload expected exactly 1 input item, received ${inputItems.length}.`,\n  );\n}\n\nconst candidates = inputItems[0].json?.candidates ?? [];\nif (!Array.isArray(candidates) || candidates.length === 0) {\n  throw new Error(\n    'Build VIP Alert Payload received no candidates. This node only runs on the branch where ' +\n      'Athena returned at least one stuck VIP — check the Stuck VIPs Found? node.',\n  );\n}\n\nconst now = new Date();\nconst alertDate = formatInTimezone(now, { day: '2-digit', month: 'short', year: 'numeric' });\nconst alertTime = formatInTimezone(now, { hour: '2-digit', minute: '2-digit', hour12: false });\n\nconst pendingTotal = candidates.reduce(\n  (sum, candidate) => sum + (toFiniteNumber(candidate.pending_amount_eur_48h) ?? 0),\n  0,\n);\nconst declinedTotal = candidates.reduce(\n  (sum, candidate) => sum + (toFiniteNumber(candidate.declined_amount_eur_48h) ?? 0),\n  0,\n);\n\n// Athena's order is the call order. Rows keep it.\nconst rows = [COLUMNS.map((column) => cell(column.label))];\nfor (const candidate of candidates) {\n  rows.push(COLUMNS.map((column) => cell(formatCell(candidate, column))));\n}\n\nif (rows.length > SLACK_MAX_TABLE_ROWS) {\n  throw new Error(\n    `The candidate table has ${rows.length} rows, above Slack's limit of ${SLACK_MAX_TABLE_ROWS}. ` +\n      `Athena returned ${candidates.length} stuck VIPs, far more than this alert expects — the ` +\n      'alert condition or the segment list has drifted.',\n  );\n}\n\nconst playerWord = candidates.length === 1 ? 'player' : 'players';\n\nconst blocks = [\n  {\n    type: 'header',\n    text: { type: 'plain_text', text: `🚨 VIP deposits stuck — ${candidates.length} ${playerWord}` },\n  },\n  {\n    type: 'context',\n    elements: [\n      { type: 'mrkdwn', text: `${alertDate} • ${REPORT_TIMEZONE} • Updated ${alertTime}` },\n    ],\n  },\n  {\n    type: 'section',\n    text: {\n      type: 'mrkdwn',\n      text:\n        `*${formatInteger(pendingTotal)} EUR pending* and *${formatInteger(declinedTotal)} EUR declined* ` +\n        `across ${candidates.length} VIP ${playerWord} in the last 48h, none of it approved.`,\n    },\n  },\n  {\n    type: 'table',\n    // Player and text columns left-aligned, every count and amount right-aligned so digits line up.\n    column_settings: COLUMNS.map((column) => ({ align: column.align })),\n    rows,\n  },\n];\n\n// A decline reason only exists where the provider actually refused something.\nconst declined = candidates.filter(\n  (candidate) =>\n    (toFiniteNumber(candidate.declined_attempts_48h) ?? 0) > 0 &&\n    (candidate.decline_group || candidate.decline_message),\n);\n\nif (declined.length > 0) {\n  const lines = declined.slice(0, MAX_DECLINE_LINES).map((candidate) => {\n    const reason = [candidate.decline_group, candidate.decline_message]\n      .filter((part) => typeof part === 'string' && part.trim() !== '')\n      .join(': ');\n    return (\n      `• *${escapeMrkdwn(formatText(candidate.player_id))}* (${escapeMrkdwn(formatText(candidate.brand))}) — ` +\n      `${formatInteger(candidate.declined_attempts_48h)} declined · ` +\n      `${escapeMrkdwn(truncate(reason, MAX_DECLINE_MESSAGE_CHARS))}`\n    );\n  });\n\n  if (declined.length > MAX_DECLINE_LINES) {\n    lines.push(`• …and ${declined.length - MAX_DECLINE_LINES} more with provider declines.`);\n  }\n\n  blocks.push({ type: 'section', text: { type: 'mrkdwn', text: '*Last provider decline*' } });\n  blocks.push({ type: 'section', text: { type: 'mrkdwn', text: lines.join('\\n') } });\n}\n\nreturn [\n  {\n    json: {\n      count: candidates.length,\n      text:\n        `VIP deposits stuck — ${candidates.length} ${playerWord}, ` +\n        `${formatInteger(pendingTotal)} EUR pending • ${alertDate} ${alertTime} ${REPORT_TIMEZONE}`,\n      blocks,\n    },\n  },\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        -300
+      ],
+      "id": "c5e1a100-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Build VIP Alert Payload"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build All-Clear Payload\n//\n// Input : one item = { count: 0, candidates: [] } from Normalize VIP Deposit Data.\n// Output: one item = the Slack payload confirming the check ran and found nothing.\n//\n// The point of this message is the difference between \"no VIP is stuck\" and \"the alert\n// never ran\". Disconnect this node from Stuck VIPs Found? to make the alert silent on\n// quiet days — the run stays green either way.\n\nconst REPORT_TIMEZONE = 'Europe/Kyiv';\n\nconst now = new Date();\nconst alertDate = new Intl.DateTimeFormat('en-GB', {\n  timeZone: REPORT_TIMEZONE,\n  day: '2-digit',\n  month: 'short',\n  year: 'numeric',\n}).format(now);\nconst alertTime = new Intl.DateTimeFormat('en-GB', {\n  timeZone: REPORT_TIMEZONE,\n  hour: '2-digit',\n  minute: '2-digit',\n  hour12: false,\n}).format(now);\n\nconst text = `VIP deposit check ran — no stuck deposits in the last 48h • ${alertDate} ${alertTime} ${REPORT_TIMEZONE}`;\n\nreturn [\n  {\n    json: {\n      count: 0,\n      text,\n      blocks: [\n        {\n          type: 'section',\n          text: {\n            type: 'mrkdwn',\n            text: '✅ *VIP deposit check* — no stuck deposits in the last 48h.',\n          },\n        },\n        {\n          type: 'context',\n          elements: [\n            { type: 'mrkdwn', text: `${alertDate} • ${REPORT_TIMEZONE} • Updated ${alertTime}` },\n          ],\n        },\n      ],\n    },\n  },\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        -80
+      ],
+      "id": "c5e1a110-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Build All-Clear Payload",
+      "notes": "Disconnect this node from Stuck VIPs Found? to keep quiet nights silent."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.slackWebhookUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: $json.text, blocks: $json.blocks }) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1140,
+        -200
+      ],
+      "id": "c5e1a120-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "HTTP Request — Send VIP Alert to Slack",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "One POST per execution: either the alert digest or the all-clear message, both to slackWebhookUrl."
+    },
+    {
+      "parameters": {
+        "errorMessage": "=Athena query {{ $json.QueryExecution.QueryExecutionId }} ended in state {{ $json.QueryExecution.Status.State }}. Reason: {{ $json.QueryExecution.Status.StateChangeReason || 'no StateChangeReason returned by Athena' }}. No VIP alert was sent."
+      },
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        260,
+        400
+      ],
+      "id": "c5e1a140-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Athena Query Failed"
+    },
+    {
+      "parameters": {
+        "errorMessage": "=Athena query {{ $('Execute Athena Query').first().json.QueryExecutionId }} did not finish within the polling budget of 120 polls x 5 s (~10 minutes). Last observed state: {{ $json.QueryExecution.Status.State }}. No VIP alert was sent."
+      },
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        480,
+        300
+      ],
+      "id": "c5e1a150-1a2b-4c3d-8e4f-9a0b1c2d3e4f",
+      "name": "Athena Poll Timeout"
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Execute Athena Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Athena Query": {
+      "main": [
+        [
+          {
+            "node": "Wait 5s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 5s": {
+      "main": [
+        [
+          {
+            "node": "Poll Athena Query Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll Athena Query Status": {
+      "main": [
+        [
+          {
+            "node": "Athena Query State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Athena Query State": {
+      "main": [
+        [
+          {
+            "node": "Get Athena Results",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Poll Attempts Remaining?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Poll Attempts Remaining?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Athena Query Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Athena Query Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Athena Query Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll Attempts Remaining?": {
+      "main": [
+        [
+          {
+            "node": "Wait 5s",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Athena Poll Timeout",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Athena Results": {
+      "main": [
+        [
+          {
+            "node": "Normalize VIP Deposit Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize VIP Deposit Data": {
+      "main": [
+        [
+          {
+            "node": "Stuck VIPs Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stuck VIPs Found?": {
+      "main": [
+        [
+          {
+            "node": "Build VIP Alert Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build All-Clear Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build VIP Alert Payload": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request — Send VIP Alert to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build All-Clear Payload": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request — Send VIP Alert to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Kyiv",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true
+  }
+}
