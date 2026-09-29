@@ -106,8 +106,11 @@ Full conventions, JSON shape, and webhook URL rules: [docs/workflows/authoring.m
 ### Available workflows
 
 ```text
-analytics-slack-report.json   Scheduled Athena query -> Slack Block Kit report
+analytics-slack-report.json      Scheduled Athena query -> Slack Block Kit report
+depositing-players-export.json   Scheduled Athena query -> Google Sheet of new non-depositors
 ```
+
+Depositing Players Export setup: [docs/workflows/depositing-players-export.md](docs/workflows/depositing-players-export.md).
 
 Configuration and testing: [docs/workflows/analytics-slack-report.md](docs/workflows/analytics-slack-report.md).
 
