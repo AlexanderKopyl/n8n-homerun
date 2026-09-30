@@ -1,0 +1,945 @@
+{
+  "name": "Depositing Players Export - LA",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * *"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -1100,
+        0
+      ],
+      "id": "c3a6e010-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "Schedule Trigger",
+      "notes": "08:00 Europe/Warsaw daily. Deposits are read for complete days only, up to yesterday."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "d4b7f000-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+              "name": "athenaRegion",
+              "value": "eu-central-1",
+              "type": "string"
+            },
+            {
+              "id": "d4b7f001-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+              "name": "athenaDatabase",
+              "value": "operator_ro_normcasino",
+              "type": "string"
+            },
+            {
+              "id": "d4b7f002-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+              "name": "athenaCatalog",
+              "value": "AwsDataCatalog",
+              "type": "string"
+            },
+            {
+              "id": "d4b7f003-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+              "name": "athenaWorkgroup",
+              "value": "primary",
+              "type": "string"
+            },
+            {
+              "id": "d4b7f004-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+              "name": "athenaOutputLocation",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "d4b7f005-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+              "name": "outputSheetId",
+              "value": "1Ic93YmdJA-upT-asuF_ehrkkXCNnkhL-_m1w9Bt3HmY",
+              "type": "string"
+            },
+            {
+              "id": "d4b7f006-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+              "name": "outputSheetTab",
+              "value": "LA",
+              "type": "string"
+            },
+            {
+              "id": "d4b7f007-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+              "name": "historySheetId",
+              "value": "1UnpFp9HxEgiTnisCBn9JUWjo8Zrl8C_jgHfdlTE2ghU",
+              "type": "string"
+            },
+            {
+              "id": "d4b7f008-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+              "name": "callCooldownDays",
+              "value": "3",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -880,
+        0
+      ],
+      "id": "c3a6e020-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "Config",
+      "notes": "outputSheetId/outputSheetTab: where the list is written (tab \"LA\" must exist; it is overwritten on every run). historySheetId: the managers' \"GR Base LA\" spreadsheet, read only. callCooldownDays: a player found in a date-named tab from the N days before today is left out."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://athena.{{ $('Config').first().json.athenaRegion }}.amazonaws.com/",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "awsAssumeRole",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-amz-json-1.1"
+            },
+            {
+              "name": "X-Amz-Target",
+              "value": "AmazonAthena.StartQueryExecution"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"QueryString\": \"WITH params AS (\\n    SELECT DATE '2026-01-01' AS date_from,     -- \\\"all time\\\": only bounds the partition scan; billing data exists from 2026-06 (checked against GR8)\\n           CURRENT_DATE      AS date_to_excl    -- up to and including yesterday\\n),\\n-- Successful deposits and withdrawals per player, all time.\\npayments AS (\\n    SELECT b.player_hk,\\n           SUM(CASE WHEN b.transaction_type = 'deposit'\\n                    THEN b.transaction_count ELSE 0 END)  AS deposit_count,\\n           SUM(CASE WHEN b.transaction_type = 'deposit'\\n                    THEN b.amount_eur ELSE 0 END)         AS deposit_amount_eur,\\n           SUM(CASE WHEN b.transaction_type = 'withdrawal'\\n                    THEN ABS(b.amount_eur) ELSE 0 END)    AS withdrawal_amount_eur,\\n           MAX(CASE WHEN b.transaction_type = 'deposit'\\n                     AND b.transaction_count > 0\\n                    THEN b.as_of_date END)                AS last_deposit_date\\n    FROM operator_ro_normcasino.agg_billing_daily b\\n    CROSS JOIN params p\\n    WHERE b.as_of_date >= p.date_from\\n      AND b.as_of_date <  p.date_to_excl\\n      AND b.transaction_type   IN ('deposit', 'withdrawal')\\n      AND b.transaction_status = 'Success'\\n      AND b.is_test = false\\n      AND b.brand IN ('LACASINO')\\n    GROUP BY 1\\n)\\n-- Column names are the sheet headers and must match COLUMNS in Parse Athena Page and Build Sheet Payload.\\nSELECT ps.brand                                                    AS \\\"Brand\\\",\\n       ps.player_id                                                AS \\\"User ID\\\",\\n       dp.first_name                                               AS \\\"First name\\\",\\n       dp.phone                                                    AS \\\"Phone Number\\\",\\n       d.deposit_amount_eur                                        AS \\\"Total Deposit\\\",\\n       ROUND(CAST(d.deposit_amount_eur AS DOUBLE)\\n             / NULLIF(d.deposit_count, 0), 2)                      AS \\\"Average Deposit\\\",\\n       d.deposit_count                                             AS \\\"Deposit Count\\\",\\n       DATE_DIFF('day', d.last_deposit_date, CURRENT_DATE)         AS \\\"LDD\\\",\\n       ROUND(CAST(d.deposit_amount_eur - d.withdrawal_amount_eur AS DOUBLE) * 100\\n             / NULLIF(CAST(d.deposit_amount_eur AS DOUBLE), 0), 2) AS \\\"Hold %\\\",\\n       ps.risk_casino_segment                                      AS \\\"Player Status\\\"\\nFROM payments d\\nJOIN operator_ro_normcasino.agg_player_summary ps\\n  ON ps.player_hk = d.player_hk\\nJOIN operator_ro_normcasino.d_player dp\\n  ON dp.player_hk = d.player_hk\\nWHERE d.deposit_count > 0\\n  AND ps.is_test = false\\n  AND ps.brand IN ('LACASINO')\\n  -- Only players with a phone number.\\n  AND NULLIF(TRIM(dp.phone), '') IS NOT NULL\\n  -- No streamers.\\n  AND NOT EXISTS (\\n        SELECT 1\\n        FROM operator_ro_normcasino.d_risk_tags_summary st\\n        WHERE st.player_hk = d.player_hk\\n          AND st.tag_id = 39\\n  )\\nORDER BY \\\"Brand\\\", \\\"LDD\\\", \\\"User ID\\\"\",\n  \"QueryExecutionContext\": { \"Database\": \"{{ $('Config').first().json.athenaDatabase }}\", \"Catalog\": \"{{ $('Config').first().json.athenaCatalog || 'AwsDataCatalog' }}\" },\n  \"WorkGroup\": \"{{ $('Config').first().json.athenaWorkgroup || 'primary' }}\",\n  \"ClientRequestToken\": \"n8n-depositing-players-export-la-execution-{{ $execution.id }}\"\n  {{ $('Config').first().json.athenaOutputLocation ? ', \"ResultConfiguration\": { \"OutputLocation\": \"' + $('Config').first().json.athenaOutputLocation + '\" }' : '' }}\n}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -660,
+        0
+      ],
+      "id": "c3a6e030-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "Execute Athena Query",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "ClientRequestToken is derived from the execution id, so a retry of this node rejoins the same Athena query instead of starting a second one."
+    },
+    {
+      "parameters": {
+        "amount": 5,
+        "unit": "seconds"
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -440,
+        0
+      ],
+      "id": "c3a6e040-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "Wait 5s",
+      "webhookId": "d4b7f900-5b6c-4d7e-9f80-1a2b3c4d5e6f"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://athena.{{ $('Config').first().json.athenaRegion }}.amazonaws.com/",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "awsAssumeRole",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-amz-json-1.1"
+            },
+            {
+              "name": "X-Amz-Target",
+              "value": "AmazonAthena.GetQueryExecution"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"QueryExecutionId\": \"{{ $('Execute Athena Query').first().json.QueryExecutionId }}\"\n}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -220,
+        0
+      ],
+      "id": "c3a6e050-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "Poll Athena Query Status",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "d4b7f100-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "SUCCEEDED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Succeeded"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "d4b7f101-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "QUEUED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Queued"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "d4b7f102-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "RUNNING",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Running"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "d4b7f103-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "FAILED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Failed"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "d4b7f104-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "CANCELLED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Cancelled"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "Unexpected State"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        0,
+        0
+      ],
+      "id": "c3a6e060-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "Athena Query State"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d4b7f110-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+              "leftValue": "={{ $runIndex }}",
+              "rightValue": 120,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        260,
+        180
+      ],
+      "id": "c3a6e070-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "Poll Attempts Remaining?",
+      "notes": "true -> wait and poll again; false -> give up after 120 polls (~10 min)"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://athena.{{ $('Config').first().json.athenaRegion }}.amazonaws.com/",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "awsAssumeRole",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-amz-json-1.1"
+            },
+            {
+              "name": "X-Amz-Target",
+              "value": "AmazonAthena.GetQueryResults"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"QueryExecutionId\": \"{{ $('Execute Athena Query').first().json.QueryExecutionId }}\",\n  \"MaxResults\": 1000{{ $json.nextToken ? ', \"NextToken\": ' + JSON.stringify($json.nextToken) : '' }}\n}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        260,
+        -200
+      ],
+      "id": "c3a6e080-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "Get Athena Results Page",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "Called once per page. The first call comes from Athena Query State and has no nextToken; later calls come back from More Pages? carrying the token of the page before."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Athena Page\n//\n// Input : one item = one raw Athena GetQueryResults response (one page, up to 1000 rows).\n// Output: one item = { page, nextToken, rowCount, rows }, rows in Athena's own order.\n//\n// Runs once per page. Collect Export Rows reads every run of this node back by run index,\n// so each run only has to describe its own page.\n\n// 100 pages x 1000 rows. Far above what this export is expected to return; a result this\n// large means a filter has gone missing, and one Sheets write would not carry it anyway.\nconst MAX_PAGES = 100;\n\n// Athena column names, as aliased in the SQL. Sheet headers reuse them.\nconst COLUMNS = [\n  'Brand',\n  'User ID',\n  'First name',\n  'Phone Number',\n  'Total Deposit',\n  'Average Deposit',\n  'Deposit Count',\n  'LDD',\n  'Hold %',\n  'Player Status',\n];\n\n/** Athena returns every value as a string, or omits VarCharValue entirely for NULL. */\nfunction cellValue(cell) {\n  if (cell === null || cell === undefined) return null;\n  const raw = cell.VarCharValue;\n  if (raw === null || raw === undefined) return null;\n  return String(raw);\n}\n\nconst page = $runIndex;\n\nif (page >= MAX_PAGES) {\n  throw new Error(\n    `Athena result exceeds ${MAX_PAGES} pages (${MAX_PAGES * 1000} rows). The export query ` +\n      'has probably lost a filter — investigate before raising MAX_PAGES.',\n  );\n}\n\nconst inputItems = $input.all();\nif (inputItems.length !== 1) {\n  throw new Error(\n    `Parse Athena Page expected exactly 1 input item from Athena, received ${inputItems.length}.`,\n  );\n}\n\nconst response = inputItems[0].json ?? {};\nconst resultSet = response.ResultSet;\nif (!resultSet || !Array.isArray(resultSet.Rows)) {\n  throw new Error(\n    'Unexpected Athena response: ResultSet.Rows is missing. Check the Get Athena Results Page node output.',\n  );\n}\n\nconst columns = (resultSet.ResultSetMetadata?.ColumnInfo ?? []).map((column) => column?.Name);\nconst missingColumns = COLUMNS.filter((column) => !columns.includes(column));\nif (missingColumns.length > 0) {\n  throw new Error(\n    `Athena result is missing column(s): ${missingColumns.join(', ')}. The export SQL and this ` +\n      'node have drifted apart — update both together.',\n  );\n}\n\n// Athena prepends a header row, on the first page only.\nlet rows = resultSet.Rows;\nif (page === 0) {\n  const firstRowValues = (rows[0]?.Data ?? []).map(cellValue);\n  const firstRowIsHeader =\n    firstRowValues.length === columns.length &&\n    firstRowValues.every((value, index) => value === columns[index]);\n  if (firstRowIsHeader) rows = rows.slice(1);\n}\n\nconst records = [];\nfor (const row of rows) {\n  const cells = row?.Data ?? [];\n  const record = {};\n  columns.forEach((columnName, index) => {\n    record[columnName] = cellValue(cells[index]);\n  });\n  if (Object.values(record).every((value) => value === null)) continue;\n  records.push(record);\n}\n\nreturn [\n  {\n    json: {\n      page,\n      nextToken: response.NextToken ?? null,\n      rowCount: records.length,\n      rows: records,\n    },\n  },\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        -200
+      ],
+      "id": "c3a6e090-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "Parse Athena Page"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d4b7f120-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+              "leftValue": "={{ $json.nextToken }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        700,
+        -200
+      ],
+      "id": "c3a6e100-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "More Pages?",
+      "notes": "true -> fetch the next page with this NextToken; false -> every page is in, read the call history."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Collect Export Rows\n//\n// Input : one item = the last page from Parse Athena Page ({ page, nextToken: null, ... }).\n// Output: one item = { rowCount, records } — every Athena row, in query order.\n//\n// Gathers every run of Parse Athena Page in page order. Filtering and formatting happen\n// later, in Build Sheet Payload, once the GR Base call history has been read.\n\nconst inputItems = $input.all();\nif (inputItems.length !== 1) {\n  throw new Error(`Collect Export Rows expected exactly 1 input item, received ${inputItems.length}.`);\n}\n\nconst lastPage = inputItems[0].json.page;\nif (!Number.isInteger(lastPage) || lastPage < 0) {\n  throw new Error(`Collect Export Rows received an invalid page index: ${lastPage}.`);\n}\n\nconst records = [];\nfor (let run = 0; run <= lastPage; run++) {\n  const pageItems = $('Parse Athena Page').all(0, run);\n  if (pageItems.length !== 1) {\n    throw new Error(\n      `Parse Athena Page run ${run} produced ${pageItems.length} items, expected 1. ` +\n        'Pages cannot be stitched together reliably — no sheet was written.',\n    );\n  }\n  records.push(...(pageItems[0].json.rows ?? []));\n}\n\nreturn [{ json: { rowCount: records.length, records } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        -100
+      ],
+      "id": "c3a6e110-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "Collect Export Rows"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $('Config').first().json.historySheetId }}?fields=sheets.properties.title",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1140,
+        -100
+      ],
+      "id": "c3a6e120-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "List Sheet Tabs",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "Tab names of the managers' \"GR Base LA\" spreadsheet. Select Recent Tabs picks the date-named ones inside the cooldown window."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Select Recent Tabs\n//\n// Input : one item = the GR Base spreadsheet metadata from List Sheet Tabs ({ sheets: [{ properties: { title } }] }).\n// Output: one item = { today, cooldownDays, tabs: [{ title, date, range }] } — the managers' date tabs\n//         that fall inside the cooldown window.\n//\n// Managers name a calling-day tab by its date: 29/09, 2909, 30.09, 01.10, 9.07, \"08.09 (таск)\". A tab\n// counts when its name STARTS with day+month; \"Bonus\", \"task\", \"рассылка 24.06\" do not. The year\n// is the current one, unless that would put the tab in the future (a December tab read in January).\n\nconst config = $('Config').first().json;\nconst cooldownDays = Number(config.callCooldownDays);\nif (!Number.isInteger(cooldownDays) || cooldownDays < 1) {\n  throw new Error(`Config.callCooldownDays must be a whole number of days >= 1, got \"${config.callCooldownDays}\".`);\n}\n\nconst inputItems = $input.all();\nif (inputItems.length !== 1) {\n  throw new Error(`Select Recent Tabs expected exactly 1 input item, received ${inputItems.length}.`);\n}\nconst sheets = inputItems[0].json.sheets;\nif (!Array.isArray(sheets)) {\n  throw new Error('Unexpected Sheets response: \"sheets\" is missing. Check List Sheet Tabs.');\n}\n\n// Workflow timezone (Europe/Warsaw), midnight.\nconst today = $now.startOf('day');\n// Window: the cooldownDays days BEFORE today. A player called on day D is skipped on D+1 .. D+cooldownDays\n// (called yesterday -> skipped today, tomorrow and the day after, with the default of 3).\nconst windowStart = today.minus({ days: cooldownDays });\nconst windowEnd = today.minus({ days: 1 });\n\n/** \"29/09\" / \"2909\" / \"29.09\" / \"9.07\" / \"08.09 (таск)\" -> a Luxon date, or null when the name is not a date. */\nfunction tabDate(title) {\n  const match = String(title).trim().match(/^(\\d{1,2})[.\\-\\/]?(\\d{2})(?!\\d)/);\n  if (!match) return null;\n  const day = Number(match[1]);\n  const month = Number(match[2]);\n  if (day < 1 || day > 31 || month < 1 || month > 12) return null;\n  let date = today.set({ year: today.year, month, day });\n  if (!date.isValid || date.day !== day) return null; // e.g. 31.02\n  if (date > today) date = date.minus({ years: 1 });\n  return date;\n}\n\nconst tabs = [];\nfor (const sheet of sheets) {\n  const title = sheet?.properties?.title;\n  if (typeof title !== 'string') continue;\n  const date = tabDate(title);\n  if (date === null || date < windowStart || date > windowEnd) continue;\n  // A1 notation quotes a tab name in single quotes and doubles any quote inside it.\n  tabs.push({ title, date: date.toISODate(), range: `'${title.replace(/'/g, \"''\")}'!A:Z` });\n}\n\nreturn [{ json: { today: today.toISODate(), cooldownDays, tabs } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        -100
+      ],
+      "id": "c3a6e130-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "Select Recent Tabs"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d4b7f130-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+              "leftValue": "={{ $json.tabs.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1580,
+        -100
+      ],
+      "id": "c3a6e140-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "Recent Tabs Found?",
+      "notes": "true -> read the recent date tabs; false -> nobody to exclude, build the list straight away."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $('Config').first().json.historySheetId }}/values:batchGet?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE&{{ $json.tabs.map(t => 'ranges=' + encodeURIComponent(t.range)).join('&') }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1800,
+        -200
+      ],
+      "id": "c3a6e150-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "Read Recent Tabs",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "One batchGet for every recent date tab, columns A:Z. UNFORMATTED_VALUE keeps ids as plain numbers/strings."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Sheet Payload\n//\n// Input : one item — either the batchGet response from Read Recent Tabs, or the Select Recent\n//         Tabs item when no date tab fell inside the cooldown window (Recent Tabs Found? = false).\n// Output: one item = { rowCount, excludedCount, range, clearRange, values } for the Sheets API calls.\n//\n// Drops every player whose User ID appears in a recent date tab, then turns the remaining\n// records into the 2D array the sheet receives. Headers and column order are defined here and\n// nowhere else. Written with valueInputOption=RAW: strings stay strings, so phone numbers keep\n// their leading + or 0 and user ids are never reformatted as numbers.\n\n// Column order in the sheet. `number` columns are sent as numbers so the sheet can sum and\n// sort them; `text` columns as text; `blank` columns are left empty for the managers to fill.\nconst COLUMNS = [\n  { key: 'Brand', header: 'Brand', type: 'text' },\n  { key: 'User ID', header: 'User ID', type: 'text' },\n  { key: 'First name', header: 'First name', type: 'text' },\n  { key: 'Phone Number', header: 'Phone Number', type: 'text' },\n  { key: 'Total Deposit', header: 'Total Deposit', type: 'number' },\n  { key: 'Average Deposit', header: 'Average Deposit', type: 'number' },\n  { key: 'Deposit Count', header: 'Deposit Count', type: 'number' },\n  { key: 'LDD', header: 'LDD', type: 'number' },\n  { key: 'Hold %', header: 'Hold %', type: 'number' },\n  { key: 'Player Status', header: 'Player Status', type: 'text' },\n  { header: 'Статус звонка', type: 'blank' },\n  { header: 'Количество попыток дозвона', type: 'blank' },\n  { header: 'Менеджер', type: 'blank' },\n  { header: 'Комментарий', type: 'blank' },\n];\n\n// Header names managers have used for the player id column in the date tabs.\nconst ID_HEADERS = ['user id', 'userid', 'account', 'id'];\n\nconst LAST_COLUMN = String.fromCharCode('A'.charCodeAt(0) + COLUMNS.length - 1);\n\n/** Same id whether it arrives as \"123\", 123 or \"123.0\" (Sheets turns ids into numbers). */\nfunction normalizeId(raw) {\n  if (raw === null || raw === undefined) return '';\n  return String(raw).trim().replace(/\\.0+$/, '');\n}\n\n/** NULL becomes an empty cell. Unparseable numbers also become empty, never NaN. */\nfunction toCell(raw, type) {\n  if (type === 'blank') return '';\n  if (raw === null || raw === undefined) return '';\n  const text = String(raw).trim();\n  if (text === '') return '';\n  if (type !== 'number') return text;\n  const parsed = Number(text);\n  return Number.isFinite(parsed) ? parsed : '';\n}\n\nconst inputItems = $input.all();\nif (inputItems.length !== 1) {\n  throw new Error(`Build Sheet Payload expected exactly 1 input item, received ${inputItems.length}.`);\n}\n\n// --- Players already called inside the cooldown window -------------------------------------\nconst recentTabs = $('Select Recent Tabs').first().json.tabs ?? [];\nconst calledIds = new Set();\nif (recentTabs.length > 0) {\n  const valueRanges = inputItems[0].json.valueRanges;\n  if (!Array.isArray(valueRanges)) {\n    throw new Error('Unexpected Sheets response: \"valueRanges\" is missing. Check Read Recent Tabs.');\n  }\n  for (const valueRange of valueRanges) {\n    const rows = valueRange.values ?? [];\n    if (rows.length === 0) continue;\n    const header = rows[0].map((cell) => String(cell ?? '').trim().toLowerCase());\n    let idColumn = header.findIndex((name) => ID_HEADERS.includes(name));\n    if (idColumn === -1) idColumn = 0;\n    for (const row of rows.slice(1)) {\n      const id = normalizeId(row[idColumn]);\n      if (id !== '') calledIds.add(id);\n    }\n  }\n}\n\n// --- Filter and format ------------------------------------------------------------------------\nconst records = $('Collect Export Rows').first().json.records ?? [];\nconst kept = records.filter((record) => !calledIds.has(normalizeId(record['User ID'])));\n\nconst values = [COLUMNS.map((column) => column.header)];\nfor (const record of kept) {\n  values.push(COLUMNS.map((column) => toCell(column.key ? record[column.key] : null, column.type)));\n}\n\nconst tab = String($('Config').first().json.outputSheetTab ?? '').trim();\nif (tab === '') {\n  throw new Error('Config.outputSheetTab is empty. Set it to the name of the tab to overwrite.');\n}\nconst quotedTab = `'${tab.replace(/'/g, \"''\")}'`;\n\nreturn [\n  {\n    json: {\n      rowCount: kept.length,\n      excludedCount: records.length - kept.length,\n      recentTabs: recentTabs.map((t) => t.title),\n      range: `${quotedTab}!A1:${LAST_COLUMN}${values.length}`,\n      // Cleared wider than the data, so columns left over from an earlier, wider layout go too.\n      clearRange: `${quotedTab}!A:Z`,\n      values,\n    },\n  },\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2020,
+        -100
+      ],
+      "id": "c3a6e160-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "Build Sheet Payload"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $('Config').first().json.outputSheetId }}/values/{{ encodeURIComponent($json.clearRange) }}:clear",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={}"
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2240,
+        -100
+      ],
+      "id": "c3a6e170-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "Clear Sheet",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "Clears columns A:Z of the tab, wider than the data, so leftovers from a longer run or an older column layout do not linger. Runs only after Athena and the call history were both read."
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $('Config').first().json.outputSheetId }}/values/{{ encodeURIComponent($('Build Sheet Payload').first().json.range) }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "valueInputOption",
+              "value": "RAW"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ range: $('Build Sheet Payload').first().json.range, majorDimension: 'ROWS', values: $('Build Sheet Payload').first().json.values }) }}"
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2460,
+        -100
+      ],
+      "id": "c3a6e180-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "Write Rows to Sheet",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "One values.update call: header row plus every player. Idempotent, so a retry rewrites the same cells."
+    },
+    {
+      "parameters": {
+        "errorMessage": "=Athena query {{ $json.QueryExecution.QueryExecutionId }} ended in state {{ $json.QueryExecution.Status.State }}. Reason: {{ $json.QueryExecution.Status.StateChangeReason || 'no StateChangeReason returned by Athena' }}. The sheet was not touched."
+      },
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        260,
+        400
+      ],
+      "id": "c3a6e190-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "Athena Query Failed"
+    },
+    {
+      "parameters": {
+        "errorMessage": "=Athena query {{ $('Execute Athena Query').first().json.QueryExecutionId }} did not finish within the polling budget of 120 polls x 5 s (~10 minutes). Last observed state: {{ $json.QueryExecution.Status.State }}. The sheet was not touched."
+      },
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        480,
+        300
+      ],
+      "id": "c3a6e200-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "Athena Poll Timeout"
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Execute Athena Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Athena Query": {
+      "main": [
+        [
+          {
+            "node": "Wait 5s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 5s": {
+      "main": [
+        [
+          {
+            "node": "Poll Athena Query Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll Athena Query Status": {
+      "main": [
+        [
+          {
+            "node": "Athena Query State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Athena Query State": {
+      "main": [
+        [
+          {
+            "node": "Get Athena Results Page",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Poll Attempts Remaining?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Poll Attempts Remaining?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Athena Query Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Athena Query Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Athena Query Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll Attempts Remaining?": {
+      "main": [
+        [
+          {
+            "node": "Wait 5s",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Athena Poll Timeout",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Athena Results Page": {
+      "main": [
+        [
+          {
+            "node": "Parse Athena Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Athena Page": {
+      "main": [
+        [
+          {
+            "node": "More Pages?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "More Pages?": {
+      "main": [
+        [
+          {
+            "node": "Get Athena Results Page",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Collect Export Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Export Rows": {
+      "main": [
+        [
+          {
+            "node": "List Sheet Tabs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Sheet Tabs": {
+      "main": [
+        [
+          {
+            "node": "Select Recent Tabs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select Recent Tabs": {
+      "main": [
+        [
+          {
+            "node": "Recent Tabs Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recent Tabs Found?": {
+      "main": [
+        [
+          {
+            "node": "Read Recent Tabs",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Sheet Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Recent Tabs": {
+      "main": [
+        [
+          {
+            "node": "Build Sheet Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Sheet Payload": {
+      "main": [
+        [
+          {
+            "node": "Clear Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear Sheet": {
+      "main": [
+        [
+          {
+            "node": "Write Rows to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Warsaw",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true
+  }
+}

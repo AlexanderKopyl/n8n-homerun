@@ -107,10 +107,15 @@ Full conventions, JSON shape, and webhook URL rules: [docs/workflows/authoring.m
 
 ```text
 analytics-slack-report.json      Scheduled Athena query -> Slack Block Kit report
-depositing-players-export.json   Scheduled Athena query -> Google Sheet of new non-depositors
+depositing-players-export-norm.json       Daily calling list of depositors (Norm/Volk/Ikra), minus recent GR Base calls -> 'Norm' tab
+depositing-players-export-la.json         Daily calling list of depositors (LACASINO), minus recent GR Base calls -> 'LA' tab
+registered-players-without-deposits-norm.json  Registrants of the last 10 days without a deposit (NORMCASINO) -> 'Reg Norm' tab
+registered-players-without-deposits-la.json    Registrants of the last 10 days without a deposit (LACASINO) -> 'Reg LA' tab
 ```
 
-Depositing Players Export setup: [docs/workflows/depositing-players-export.md](docs/workflows/depositing-players-export.md).
+Depositing Players Export (Norm and LA) setup: [docs/workflows/depositing-players-export.md](docs/workflows/depositing-players-export.md).
+
+Registered Players Without Deposits (Norm and LA) setup: [docs/workflows/registered-players-without-deposits.md](docs/workflows/registered-players-without-deposits.md).
 
 Configuration and testing: [docs/workflows/analytics-slack-report.md](docs/workflows/analytics-slack-report.md).
 

@@ -1,5 +1,5 @@
 {
-  "name": "Depositing Players Export",
+  "name": "Registered Players Without Deposits - Norm",
   "nodes": [
     {
       "parameters": {
@@ -18,7 +18,7 @@
         -1100,
         0
       ],
-      "id": "e3b7c010-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "id": "e5c8a010-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
       "name": "Schedule Trigger",
       "notes": "08:00 Europe/Warsaw daily. The query reads complete days only, up to yesterday."
     },
@@ -27,45 +27,45 @@
         "assignments": {
           "assignments": [
             {
-              "id": "f4c8d000-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+              "id": "f6d9b000-5b6c-4d7e-9f80-1a2b3c4d5e6f",
               "name": "athenaRegion",
               "value": "eu-central-1",
               "type": "string"
             },
             {
-              "id": "f4c8d001-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+              "id": "f6d9b001-5b6c-4d7e-9f80-1a2b3c4d5e6f",
               "name": "athenaDatabase",
               "value": "operator_ro_normcasino",
               "type": "string"
             },
             {
-              "id": "f4c8d002-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+              "id": "f6d9b002-5b6c-4d7e-9f80-1a2b3c4d5e6f",
               "name": "athenaCatalog",
               "value": "AwsDataCatalog",
               "type": "string"
             },
             {
-              "id": "f4c8d003-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+              "id": "f6d9b003-5b6c-4d7e-9f80-1a2b3c4d5e6f",
               "name": "athenaWorkgroup",
               "value": "primary",
               "type": "string"
             },
             {
-              "id": "f4c8d004-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+              "id": "f6d9b004-5b6c-4d7e-9f80-1a2b3c4d5e6f",
               "name": "athenaOutputLocation",
               "value": "",
               "type": "string"
             },
             {
-              "id": "f4c8d005-5b6c-4d7e-9f80-1a2b3c4d5e6f",
-              "name": "googleSheetId",
-              "value": "REPLACE-WITH-SPREADSHEET-ID",
+              "id": "f6d9b005-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+              "name": "outputSheetId",
+              "value": "1Ic93YmdJA-upT-asuF_ehrkkXCNnkhL-_m1w9Bt3HmY",
               "type": "string"
             },
             {
-              "id": "f4c8d006-5b6c-4d7e-9f80-1a2b3c4d5e6f",
-              "name": "googleSheetTab",
-              "value": "Depositing Players",
+              "id": "f6d9b006-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+              "name": "outputSheetTab",
+              "value": "Reg Norm",
               "type": "string"
             }
           ]
@@ -79,9 +79,9 @@
         -880,
         0
       ],
-      "id": "e3b7c020-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "id": "e5c8a020-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
       "name": "Config",
-      "notes": "Edit these after import. googleSheetId is the long id in the spreadsheet URL; googleSheetTab must already exist and is overwritten on every run."
+      "notes": "Edit these after import. outputSheetId is the long id in the spreadsheet URL; outputSheetTab must already exist and is overwritten on every run."
     },
     {
       "parameters": {
@@ -104,7 +104,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"QueryString\": \"WITH params AS (\\n    SELECT DATE '2026-01-01'                AS date_from,     -- \\\"all time\\\"; the bound lets Athena prune partitions\\n           CURRENT_DATE                     AS date_to_excl,\\n           CURRENT_DATE - INTERVAL '10' DAY AS reg_from       -- 10 full days, today excluded\\n),\\n-- Everyone with at least one successful deposit.\\ndepositors AS (\\n    SELECT b.player_hk\\n    FROM operator_ro_normcasino.agg_billing_daily b\\n    CROSS JOIN params p\\n    WHERE b.as_of_date >= p.date_from\\n      AND b.as_of_date <  p.date_to_excl\\n      AND b.transaction_type   = 'deposit'\\n      AND b.transaction_status = 'Success'\\n      AND b.brand IN ('NORMCASINO', 'LACASINO', 'VOLKCASINO', 'IKRACASINO')\\n    GROUP BY 1\\n    HAVING SUM(b.transaction_count) > 0\\n)\\n-- Column order is the sheet's column order. Headers are set in Collect Export Rows.\\nSELECT ps.brand                                                    AS brand,\\n       ps.player_id                                                AS user_id,\\n       dp.first_name                                               AS first_name,\\n       dp.phone                                                    AS phone_number,\\n       DATE_DIFF('day', CAST(ps.registration_date AS DATE),\\n                 CURRENT_DATE)                                     AS days_since_registration\\nFROM operator_ro_normcasino.agg_player_summary ps\\nCROSS JOIN params p\\nLEFT JOIN depositors d\\n  ON d.player_hk = ps.player_hk\\nJOIN operator_ro_normcasino.d_player dp\\n  ON dp.player_hk = ps.player_hk\\nWHERE ps.is_test = false\\n  AND ps.brand IN ('NORMCASINO', 'LACASINO', 'VOLKCASINO', 'IKRACASINO')\\n  AND CAST(ps.registration_date AS DATE) >= p.reg_from\\n  AND CAST(ps.registration_date AS DATE) <  CURRENT_DATE\\n  AND ps.player_deleted_date IS NULL\\n  -- Registered in the last 10 days and never deposited.\\n  AND d.player_hk IS NULL\\n  -- Only players with a phone number.\\n  AND NULLIF(TRIM(dp.phone), '') IS NOT NULL\\n  -- No streamers.\\n  AND NOT EXISTS (\\n        SELECT 1\\n        FROM operator_ro_normcasino.d_risk_tags_summary st\\n        WHERE st.player_hk = ps.player_hk\\n          AND st.tag_id = 39\\n  )\\nORDER BY brand, days_since_registration, user_id\",\n  \"QueryExecutionContext\": { \"Database\": \"{{ $('Config').first().json.athenaDatabase }}\", \"Catalog\": \"{{ $('Config').first().json.athenaCatalog || 'AwsDataCatalog' }}\" },\n  \"WorkGroup\": \"{{ $('Config').first().json.athenaWorkgroup || 'primary' }}\",\n  \"ClientRequestToken\": \"n8n-depositing-players-export-execution-{{ $execution.id }}\"\n  {{ $('Config').first().json.athenaOutputLocation ? ', \"ResultConfiguration\": { \"OutputLocation\": \"' + $('Config').first().json.athenaOutputLocation + '\" }' : '' }}\n}",
+        "jsonBody": "={\n  \"QueryString\": \"WITH params AS (\\n    SELECT DATE '2026-01-01'                 AS date_from,     -- \\\"all time\\\"; the bound lets Athena prune partitions\\n           CURRENT_DATE                      AS date_to_excl,\\n           CURRENT_DATE - INTERVAL '10' DAY  AS reg_from       -- 10 complete days; today is not included\\n),\\n-- Everyone with at least one successful deposit, on any brand.\\ndepositors AS (\\n    SELECT b.player_hk\\n    FROM operator_ro_normcasino.agg_billing_daily b\\n    CROSS JOIN params p\\n    WHERE b.as_of_date >= p.date_from\\n      AND b.as_of_date <  p.date_to_excl\\n      AND b.transaction_type   = 'deposit'\\n      AND b.transaction_status = 'Success'\\n      AND b.brand IN ('NORMCASINO', 'LACASINO', 'VOLKCASINO', 'IKRACASINO')\\n    GROUP BY 1\\n    HAVING SUM(b.transaction_count) > 0\\n)\\n-- Column names must match COLUMNS in Parse Athena Page and Collect Export Rows.\\nSELECT ps.brand                                                    AS \\\"Brand\\\",\\n       ps.player_id                                                AS \\\"User ID\\\",\\n       dp.first_name                                               AS \\\"First name\\\",\\n       dp.phone                                                    AS \\\"Phone Number\\\",\\n       DATE_DIFF('day', CAST(ps.registration_date AS DATE),\\n                 CURRENT_DATE)                                     AS \\\"Days Since Registration\\\"\\nFROM operator_ro_normcasino.agg_player_summary ps\\nCROSS JOIN params p\\nLEFT JOIN depositors d\\n  ON d.player_hk = ps.player_hk\\nJOIN operator_ro_normcasino.d_player dp\\n  ON dp.player_hk = ps.player_hk\\nWHERE ps.is_test = false\\n  AND ps.brand IN ('NORMCASINO')\\n  -- Registered in the last 10 complete days.\\n  AND CAST(ps.registration_date AS DATE) >= p.reg_from\\n  AND CAST(ps.registration_date AS DATE) <  CURRENT_DATE\\n  AND ps.player_deleted_date IS NULL\\n  AND d.player_hk IS NULL\\n  -- Only players with a phone number.\\n  AND NULLIF(TRIM(dp.phone), '') IS NOT NULL\\n  -- No streamers.\\n  AND NOT EXISTS (\\n        SELECT 1\\n        FROM operator_ro_normcasino.d_risk_tags_summary st\\n        WHERE st.player_hk = ps.player_hk\\n          AND st.tag_id = 39\\n  )\\nORDER BY \\\"Brand\\\", \\\"Days Since Registration\\\", \\\"User ID\\\"\\n\",\n  \"QueryExecutionContext\": { \"Database\": \"{{ $('Config').first().json.athenaDatabase }}\", \"Catalog\": \"{{ $('Config').first().json.athenaCatalog || 'AwsDataCatalog' }}\" },\n  \"WorkGroup\": \"{{ $('Config').first().json.athenaWorkgroup || 'primary' }}\",\n  \"ClientRequestToken\": \"n8n-registered-players-without-deposits-norm-execution-{ $execution.id }\"\n  {{ $('Config').first().json.athenaOutputLocation ? ', \"ResultConfiguration\": { \"OutputLocation\": \"' + $('Config').first().json.athenaOutputLocation + '\" }' : '' }}\n}",
         "options": {
           "timeout": 30000,
           "response": {
@@ -120,7 +120,7 @@
         -660,
         0
       ],
-      "id": "e3b7c030-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "id": "e5c8a030-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
       "name": "Execute Athena Query",
       "retryOnFail": true,
       "maxTries": 3,
@@ -138,9 +138,9 @@
         -440,
         0
       ],
-      "id": "e3b7c040-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "id": "e5c8a040-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
       "name": "Wait 5s",
-      "webhookId": "f4c8d900-5b6c-4d7e-9f80-1a2b3c4d5e6f"
+      "webhookId": "f6d9b900-5b6c-4d7e-9f80-1a2b3c4d5e6f"
     },
     {
       "parameters": {
@@ -179,7 +179,7 @@
         -220,
         0
       ],
-      "id": "e3b7c050-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "id": "e5c8a050-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
       "name": "Poll Athena Query Status",
       "retryOnFail": true,
       "maxTries": 3,
@@ -199,7 +199,7 @@
                 },
                 "conditions": [
                   {
-                    "id": "f4c8d100-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+                    "id": "f6d9b100-5b6c-4d7e-9f80-1a2b3c4d5e6f",
                     "leftValue": "={{ $json.QueryExecution.Status.State }}",
                     "rightValue": "SUCCEEDED",
                     "operator": {
@@ -223,7 +223,7 @@
                 },
                 "conditions": [
                   {
-                    "id": "f4c8d101-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+                    "id": "f6d9b101-5b6c-4d7e-9f80-1a2b3c4d5e6f",
                     "leftValue": "={{ $json.QueryExecution.Status.State }}",
                     "rightValue": "QUEUED",
                     "operator": {
@@ -247,7 +247,7 @@
                 },
                 "conditions": [
                   {
-                    "id": "f4c8d102-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+                    "id": "f6d9b102-5b6c-4d7e-9f80-1a2b3c4d5e6f",
                     "leftValue": "={{ $json.QueryExecution.Status.State }}",
                     "rightValue": "RUNNING",
                     "operator": {
@@ -271,7 +271,7 @@
                 },
                 "conditions": [
                   {
-                    "id": "f4c8d103-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+                    "id": "f6d9b103-5b6c-4d7e-9f80-1a2b3c4d5e6f",
                     "leftValue": "={{ $json.QueryExecution.Status.State }}",
                     "rightValue": "FAILED",
                     "operator": {
@@ -295,7 +295,7 @@
                 },
                 "conditions": [
                   {
-                    "id": "f4c8d104-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+                    "id": "f6d9b104-5b6c-4d7e-9f80-1a2b3c4d5e6f",
                     "leftValue": "={{ $json.QueryExecution.Status.State }}",
                     "rightValue": "CANCELLED",
                     "operator": {
@@ -322,7 +322,7 @@
         0,
         0
       ],
-      "id": "e3b7c060-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "id": "e5c8a060-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
       "name": "Athena Query State"
     },
     {
@@ -336,7 +336,7 @@
           },
           "conditions": [
             {
-              "id": "f4c8d110-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+              "id": "f6d9b110-5b6c-4d7e-9f80-1a2b3c4d5e6f",
               "leftValue": "={{ $runIndex }}",
               "rightValue": 120,
               "operator": {
@@ -355,7 +355,7 @@
         260,
         180
       ],
-      "id": "e3b7c070-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "id": "e5c8a070-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
       "name": "Poll Attempts Remaining?",
       "notes": "true -> wait and poll again; false -> give up after 120 polls (~10 min)"
     },
@@ -396,7 +396,7 @@
         260,
         -200
       ],
-      "id": "e3b7c080-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "id": "e5c8a080-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
       "name": "Get Athena Results Page",
       "retryOnFail": true,
       "maxTries": 3,
@@ -405,7 +405,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Parse Athena Page\n//\n// Input : one item = one raw Athena GetQueryResults response (one page, up to 1000 rows).\n// Output: one item = { page, nextToken, rowCount, rows }, rows in Athena's own order.\n//\n// Runs once per page. Collect Export Rows reads every run of this node back by run index,\n// so each run only has to describe its own page.\n\n// 100 pages x 1000 rows. Far above what this export is expected to return; a result this\n// large means a filter has gone missing, and one Sheets write would not carry it anyway.\nconst MAX_PAGES = 100;\n\nconst COLUMNS = [\n  'brand',\n  'user_id',\n  'first_name',\n  'phone_number',\n  'days_since_registration',\n];\n\n/** Athena returns every value as a string, or omits VarCharValue entirely for NULL. */\nfunction cellValue(cell) {\n  if (cell === null || cell === undefined) return null;\n  const raw = cell.VarCharValue;\n  if (raw === null || raw === undefined) return null;\n  return String(raw);\n}\n\nconst page = $runIndex;\n\nif (page >= MAX_PAGES) {\n  throw new Error(\n    `Athena result exceeds ${MAX_PAGES} pages (${MAX_PAGES * 1000} rows). The export query ` +\n      'has probably lost a filter — investigate before raising MAX_PAGES.',\n  );\n}\n\nconst inputItems = $input.all();\nif (inputItems.length !== 1) {\n  throw new Error(\n    `Parse Athena Page expected exactly 1 input item from Athena, received ${inputItems.length}.`,\n  );\n}\n\nconst response = inputItems[0].json ?? {};\nconst resultSet = response.ResultSet;\nif (!resultSet || !Array.isArray(resultSet.Rows)) {\n  throw new Error(\n    'Unexpected Athena response: ResultSet.Rows is missing. Check the Get Athena Results Page node output.',\n  );\n}\n\nconst columns = (resultSet.ResultSetMetadata?.ColumnInfo ?? []).map((column) => column?.Name);\nconst missingColumns = COLUMNS.filter((column) => !columns.includes(column));\nif (missingColumns.length > 0) {\n  throw new Error(\n    `Athena result is missing column(s): ${missingColumns.join(', ')}. The export SQL and this ` +\n      'node have drifted apart — update both together.',\n  );\n}\n\n// Athena prepends a header row, on the first page only.\nlet rows = resultSet.Rows;\nif (page === 0) {\n  const firstRowValues = (rows[0]?.Data ?? []).map(cellValue);\n  const firstRowIsHeader =\n    firstRowValues.length === columns.length &&\n    firstRowValues.every((value, index) => value === columns[index]);\n  if (firstRowIsHeader) rows = rows.slice(1);\n}\n\nconst records = [];\nfor (const row of rows) {\n  const cells = row?.Data ?? [];\n  const record = {};\n  columns.forEach((columnName, index) => {\n    record[columnName] = cellValue(cells[index]);\n  });\n  if (Object.values(record).every((value) => value === null)) continue;\n  records.push(record);\n}\n\nreturn [\n  {\n    json: {\n      page,\n      nextToken: response.NextToken ?? null,\n      rowCount: records.length,\n      rows: records,\n    },\n  },\n];"
+        "jsCode": "// Parse Athena Page\n//\n// Input : one item = one raw Athena GetQueryResults response (one page, up to 1000 rows).\n// Output: one item = { page, nextToken, rowCount, rows }, rows in Athena's own order.\n//\n// Runs once per page. Collect Export Rows reads every run of this node back by run index,\n// so each run only has to describe its own page.\n\n// 100 pages x 1000 rows. Far above what this export is expected to return; a result this\n// large means a filter has gone missing, and one Sheets write would not carry it anyway.\nconst MAX_PAGES = 100;\n\nconst COLUMNS = [\n  'Brand',\n  'User ID',\n  'First name',\n  'Phone Number',\n  'Days Since Registration',\n];\n\n/** Athena returns every value as a string, or omits VarCharValue entirely for NULL. */\nfunction cellValue(cell) {\n  if (cell === null || cell === undefined) return null;\n  const raw = cell.VarCharValue;\n  if (raw === null || raw === undefined) return null;\n  return String(raw);\n}\n\nconst page = $runIndex;\n\nif (page >= MAX_PAGES) {\n  throw new Error(\n    `Athena result exceeds ${MAX_PAGES} pages (${MAX_PAGES * 1000} rows). The export query ` +\n      'has probably lost a filter — investigate before raising MAX_PAGES.',\n  );\n}\n\nconst inputItems = $input.all();\nif (inputItems.length !== 1) {\n  throw new Error(\n    `Parse Athena Page expected exactly 1 input item from Athena, received ${inputItems.length}.`,\n  );\n}\n\nconst response = inputItems[0].json ?? {};\nconst resultSet = response.ResultSet;\nif (!resultSet || !Array.isArray(resultSet.Rows)) {\n  throw new Error(\n    'Unexpected Athena response: ResultSet.Rows is missing. Check the Get Athena Results Page node output.',\n  );\n}\n\nconst columns = (resultSet.ResultSetMetadata?.ColumnInfo ?? []).map((column) => column?.Name);\nconst missingColumns = COLUMNS.filter((column) => !columns.includes(column));\nif (missingColumns.length > 0) {\n  throw new Error(\n    `Athena result is missing column(s): ${missingColumns.join(', ')}. The export SQL and this ` +\n      'node have drifted apart — update both together.',\n  );\n}\n\n// Athena prepends a header row, on the first page only.\nlet rows = resultSet.Rows;\nif (page === 0) {\n  const firstRowValues = (rows[0]?.Data ?? []).map(cellValue);\n  const firstRowIsHeader =\n    firstRowValues.length === columns.length &&\n    firstRowValues.every((value, index) => value === columns[index]);\n  if (firstRowIsHeader) rows = rows.slice(1);\n}\n\nconst records = [];\nfor (const row of rows) {\n  const cells = row?.Data ?? [];\n  const record = {};\n  columns.forEach((columnName, index) => {\n    record[columnName] = cellValue(cells[index]);\n  });\n  if (Object.values(record).every((value) => value === null)) continue;\n  records.push(record);\n}\n\nreturn [\n  {\n    json: {\n      page,\n      nextToken: response.NextToken ?? null,\n      rowCount: records.length,\n      rows: records,\n    },\n  },\n];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -413,7 +413,7 @@
         480,
         -200
       ],
-      "id": "e3b7c090-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "id": "e5c8a090-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
       "name": "Parse Athena Page"
     },
     {
@@ -427,7 +427,7 @@
           },
           "conditions": [
             {
-              "id": "f4c8d120-5b6c-4d7e-9f80-1a2b3c4d5e6f",
+              "id": "f6d9b120-5b6c-4d7e-9f80-1a2b3c4d5e6f",
               "leftValue": "={{ $json.nextToken }}",
               "rightValue": "",
               "operator": {
@@ -447,13 +447,13 @@
         700,
         -200
       ],
-      "id": "e3b7c100-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "id": "e5c8a100-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
       "name": "More Pages?",
       "notes": "true -> fetch the next page with this NextToken; false -> every page is in, build the sheet."
     },
     {
       "parameters": {
-        "jsCode": "// Collect Export Rows\n//\n// Input : one item = the last page from Parse Athena Page ({ page, nextToken: null, ... }).\n// Output: one item = { rowCount, range, clearRange, values } for the Sheets API calls.\n//\n// Gathers every run of Parse Athena Page in page order, then turns records into the 2D\n// array the sheet receives. Headers and column order are defined here and nowhere else.\n//\n// Values are written with valueInputOption=RAW: strings stay strings, so phone numbers\n// keep their leading + or 0 and user ids are never reformatted as numbers.\n\n// Column order in the sheet. `number` columns are sent as numbers so the sheet can sum\n// and sort them; everything else is sent as text.\nconst COLUMNS = [\n  { key: 'brand', header: 'Brand', type: 'text' },\n  { key: 'user_id', header: 'User ID', type: 'text' },\n  { key: 'first_name', header: 'First Name', type: 'text' },\n  { key: 'phone_number', header: 'Phone Number', type: 'text' },\n  { key: 'days_since_registration', header: 'Days Since Registration', type: 'number' },\n];\n\nconst LAST_COLUMN = String.fromCharCode('A'.charCodeAt(0) + COLUMNS.length - 1);\n\n/** NULL becomes an empty cell. Unparseable numbers also become empty, never NaN. */\nfunction toCell(raw, type) {\n  if (raw === null || raw === undefined) return '';\n  const text = String(raw).trim();\n  if (text === '') return '';\n  if (type !== 'number') return text;\n  const parsed = Number(text);\n  return Number.isFinite(parsed) ? parsed : '';\n}\n\nconst inputItems = $input.all();\nif (inputItems.length !== 1) {\n  throw new Error(`Collect Export Rows expected exactly 1 input item, received ${inputItems.length}.`);\n}\n\nconst lastPage = inputItems[0].json.page;\nif (!Number.isInteger(lastPage) || lastPage < 0) {\n  throw new Error(`Collect Export Rows received an invalid page index: ${lastPage}.`);\n}\n\nconst records = [];\nfor (let run = 0; run <= lastPage; run++) {\n  const pageItems = $('Parse Athena Page').all(0, run);\n  if (pageItems.length !== 1) {\n    throw new Error(\n      `Parse Athena Page run ${run} produced ${pageItems.length} items, expected 1. ` +\n        'Pages cannot be stitched together reliably — no sheet was written.',\n    );\n  }\n  records.push(...(pageItems[0].json.rows ?? []));\n}\n\nconst values = [COLUMNS.map((column) => column.header)];\nfor (const record of records) {\n  values.push(COLUMNS.map((column) => toCell(record[column.key], column.type)));\n}\n\nconst tab = String($('Config').first().json.googleSheetTab ?? '').trim();\nif (tab === '') {\n  throw new Error('Config.googleSheetTab is empty. Set it to the name of the tab to overwrite.');\n}\n// A1 notation quotes a tab name in single quotes and doubles any quote inside it.\nconst quotedTab = `'${tab.replace(/'/g, \"''\")}'`;\n\nreturn [\n  {\n    json: {\n      rowCount: records.length,\n      range: `${quotedTab}!A1:${LAST_COLUMN}${values.length}`,\n      // Cleared wider than the data, so columns left over from an earlier, wider layout go too.\n      clearRange: `${quotedTab}!A:Z`,\n      values,\n    },\n  },\n];"
+        "jsCode": "// Collect Export Rows\n//\n// Input : one item = the last page from Parse Athena Page ({ page, nextToken: null, ... }).\n// Output: one item = { rowCount, range, clearRange, values } for the Sheets API calls.\n//\n// Gathers every run of Parse Athena Page in page order, then turns records into the 2D\n// array the sheet receives. Headers and column order are defined here and nowhere else.\n//\n// Values are written with valueInputOption=RAW: strings stay strings, so phone numbers\n// keep their leading + or 0 and user ids are never reformatted as numbers.\n\n// Column order in the sheet. `number` columns are sent as numbers so the sheet can sum\n// and sort them; `text` columns as text; `blank` columns are left empty for the managers,\n// the same four as in Depositing Players Export.\nconst COLUMNS = [\n  { key: 'Brand', header: 'Brand', type: 'text' },\n  { key: 'User ID', header: 'User ID', type: 'text' },\n  { key: 'First name', header: 'First name', type: 'text' },\n  { key: 'Phone Number', header: 'Phone Number', type: 'text' },\n  { key: 'Days Since Registration', header: 'Days Since Registration', type: 'number' },\n  { header: 'Статус звонка', type: 'blank' },\n  { header: 'Количество попыток дозвона', type: 'blank' },\n  { header: 'Менеджер', type: 'blank' },\n  { header: 'Комментарий', type: 'blank' },\n];\n\nconst LAST_COLUMN = String.fromCharCode('A'.charCodeAt(0) + COLUMNS.length - 1);\n\n/** NULL becomes an empty cell. Unparseable numbers also become empty, never NaN. */\nfunction toCell(raw, type) {\n  if (type === 'blank') return '';\n  if (raw === null || raw === undefined) return '';\n  const text = String(raw).trim();\n  if (text === '') return '';\n  if (type !== 'number') return text;\n  const parsed = Number(text);\n  return Number.isFinite(parsed) ? parsed : '';\n}\n\nconst inputItems = $input.all();\nif (inputItems.length !== 1) {\n  throw new Error(`Collect Export Rows expected exactly 1 input item, received ${inputItems.length}.`);\n}\n\nconst lastPage = inputItems[0].json.page;\nif (!Number.isInteger(lastPage) || lastPage < 0) {\n  throw new Error(`Collect Export Rows received an invalid page index: ${lastPage}.`);\n}\n\nconst records = [];\nfor (let run = 0; run <= lastPage; run++) {\n  const pageItems = $('Parse Athena Page').all(0, run);\n  if (pageItems.length !== 1) {\n    throw new Error(\n      `Parse Athena Page run ${run} produced ${pageItems.length} items, expected 1. ` +\n        'Pages cannot be stitched together reliably — no sheet was written.',\n    );\n  }\n  records.push(...(pageItems[0].json.rows ?? []));\n}\n\nconst values = [COLUMNS.map((column) => column.header)];\nfor (const record of records) {\n  values.push(COLUMNS.map((column) => toCell(column.key ? record[column.key] : null, column.type)));\n}\n\nconst tab = String($('Config').first().json.outputSheetTab ?? '').trim();\nif (tab === '') {\n  throw new Error('Config.outputSheetTab is empty. Set it to the name of the tab to overwrite.');\n}\n// A1 notation quotes a tab name in single quotes and doubles any quote inside it.\nconst quotedTab = `'${tab.replace(/'/g, \"''\")}'`;\n\nreturn [\n  {\n    json: {\n      rowCount: records.length,\n      range: `${quotedTab}!A1:${LAST_COLUMN}${values.length}`,\n      // Cleared wider than the data, so columns left over from an earlier, wider layout go too.\n      clearRange: `${quotedTab}!A:Z`,\n      values,\n    },\n  },\n];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -461,13 +461,13 @@
         920,
         -100
       ],
-      "id": "e3b7c110-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "id": "e5c8a110-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
       "name": "Collect Export Rows"
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $('Config').first().json.googleSheetId }}/values/{{ encodeURIComponent($json.clearRange) }}:clear",
+        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $('Config').first().json.outputSheetId }}/values/{{ encodeURIComponent($json.clearRange) }}:clear",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "googleSheetsOAuth2Api",
         "sendBody": true,
@@ -488,7 +488,7 @@
         1140,
         -100
       ],
-      "id": "e3b7c120-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "id": "e5c8a120-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
       "name": "Clear Sheet",
       "retryOnFail": true,
       "maxTries": 3,
@@ -498,7 +498,7 @@
     {
       "parameters": {
         "method": "PUT",
-        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $('Config').first().json.googleSheetId }}/values/{{ encodeURIComponent($('Collect Export Rows').first().json.range) }}",
+        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $('Config').first().json.outputSheetId }}/values/{{ encodeURIComponent($('Collect Export Rows').first().json.range) }}",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "googleSheetsOAuth2Api",
         "sendQuery": true,
@@ -528,7 +528,7 @@
         1360,
         -100
       ],
-      "id": "e3b7c130-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "id": "e5c8a130-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
       "name": "Write Rows to Sheet",
       "retryOnFail": true,
       "maxTries": 3,
@@ -545,7 +545,7 @@
         260,
         400
       ],
-      "id": "e3b7c140-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "id": "e5c8a140-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
       "name": "Athena Query Failed"
     },
     {
@@ -558,7 +558,7 @@
         480,
         300
       ],
-      "id": "e3b7c150-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "id": "e5c8a150-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
       "name": "Athena Poll Timeout"
     }
   ],
