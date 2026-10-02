@@ -42,6 +42,8 @@ Schedule Trigger
                           false -> Collect Export Rows
                                    -> Clear Sheet          (values:clear)
                                    -> Write Rows to Sheet  (values.update)
+                                   -> Read Sheet Title     (properties.title)
+                                   -> Stamp Sheet Title    (batchUpdate, title)
        QUEUED     -> Poll Attempts Remaining? -> back to Wait 5s
        RUNNING    -> Poll Attempts Remaining? -> back to Wait 5s
        FAILED     -> Athena Query Failed   (Stop and Error)
@@ -55,6 +57,12 @@ not parse as JSON, so `$response.body.NextToken` would never resolve.
 
 The sheet is touched only after every page has been read. An Athena failure, a poll timeout
 or a malformed page leaves yesterday's export in place.
+
+After the rows are written, the output spreadsheet is renamed to
+`<name> (обновлено dd.MM HH:mm)` in Europe/Warsaw time, replacing an earlier stamp and keeping
+the name. It is the last step, so a title with today's time means the data is today's. The
+spreadsheet is shared with [Depositing Players Export](depositing-players-export.md), and all
+four workflows stamp the same title.
 
 ## Setup on a new n8n instance
 
@@ -154,6 +162,7 @@ in both workflows.
 | A required column missing from the result | `Parse Athena Page` throws. Sheet untouched. |
 | HTTP error on any Athena or Sheets call | Node retries 3 times, 5 s apart, then the run fails. |
 | `Write Rows to Sheet` fails after `Clear Sheet` succeeded | The tab is left empty until the next successful run. |
+| `Read Sheet Title` / `Stamp Sheet Title` fails after the rows were written | The run is marked failed; the data is fresh but the title keeps the previous stamp. |
 | Zero players | Header row only. Run succeeds. |
 
 ## Testing

@@ -688,6 +688,64 @@
       ],
       "id": "c3a6e200-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
       "name": "Athena Poll Timeout"
+    },
+    {
+      "parameters": {
+        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $('Config').first().json.outputSheetId }}?fields=properties.title",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2680,
+        -100
+      ],
+      "id": "c3a6eb00-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "Read Sheet Title",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "Current title of the output spreadsheet, so Stamp Sheet Title keeps the name and only replaces the timestamp suffix."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $('Config').first().json.outputSheetId }}:batchUpdate",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ requests: [{ updateSpreadsheetProperties: { properties: { title: String($json.properties.title).replace(/\\s*\\(обновлено [^)]*\\)\\s*$/u, '') + ' (обновлено ' + $now.toFormat('dd.MM HH:mm') + ')' }, fields: 'title' } }] }) }}"
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2900,
+        -100
+      ],
+      "id": "c3a6e1a0-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "Stamp Sheet Title",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "Renames the output spreadsheet to \"<name> (обновлено dd.MM HH:mm)\", Europe/Warsaw time, replacing an earlier stamp. Runs last, only after the rows were written, so the stamp in the title means the data is fresh. All four export workflows share this spreadsheet and stamp the same title."
     }
   ],
   "connections": {
@@ -928,6 +986,28 @@
         [
           {
             "node": "Write Rows to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Rows to Sheet": {
+      "main": [
+        [
+          {
+            "node": "Read Sheet Title",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Sheet Title": {
+      "main": [
+        [
+          {
+            "node": "Stamp Sheet Title",
             "type": "main",
             "index": 0
           }

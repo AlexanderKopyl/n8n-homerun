@@ -54,6 +54,8 @@ Schedule Trigger
                                         false -> Build Sheet Payload
                                    -> Clear Sheet            (output sheet: values:clear)
                                    -> Write Rows to Sheet    (output sheet: values.update)
+                                   -> Read Sheet Title       (output sheet: properties.title)
+                                   -> Stamp Sheet Title      (output sheet: batchUpdate, title)
        QUEUED     -> Poll Attempts Remaining? -> back to Wait 5s
        RUNNING    -> Poll Attempts Remaining? -> back to Wait 5s
        FAILED     -> Athena Query Failed   (Stop and Error)
@@ -68,6 +70,14 @@ not parse as JSON, so `$response.body.NextToken` would never resolve.
 The output sheet is touched only after every Athena page **and** the call history have been
 read. An Athena failure, a poll timeout, a malformed page or a GR Base read error leaves
 yesterday's list in place. The GR Base spreadsheets are never written.
+
+After the rows are written, the output spreadsheet is renamed to
+`<name> (обновлено dd.MM HH:mm)` in Europe/Warsaw time. `Read Sheet Title` fetches the current
+title, `Stamp Sheet Title` strips an earlier `(обновлено …)` suffix and appends a new one, so
+the name itself is kept. The stamp is the last step: a title with today's time means the data
+in the sheet is today's. All four export workflows (this pair and
+[Registered Players Without Deposits](registered-players-without-deposits.md)) share the
+spreadsheet and stamp the same title, so it shows the most recent successful run of any of them.
 
 ## How the daily list is used
 
@@ -197,6 +207,7 @@ in both workflows.
 | GR Base unreachable / no access | `List Sheet Tabs` or `Read Recent Tabs` fails after retries. Sheet untouched. |
 | HTTP error on any Athena or Sheets call | Node retries 3 times, 5 s apart, then the run fails. |
 | `Write Rows to Sheet` fails after `Clear Sheet` succeeded | The tab is left empty until the next successful run. |
+| `Read Sheet Title` / `Stamp Sheet Title` fails after the rows were written | The run is marked failed; the data is fresh but the title keeps the previous stamp. |
 | No date tab in the window | Nobody excluded; the full list is written. |
 | Every candidate already called | Header row only. Run succeeds. |
 

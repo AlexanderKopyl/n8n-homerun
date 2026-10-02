@@ -104,7 +104,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"QueryString\": \"WITH params AS (\\n    SELECT DATE '2026-01-01'                 AS date_from,     -- \\\"all time\\\"; the bound lets Athena prune partitions\\n           CURRENT_DATE                      AS date_to_excl,\\n           CURRENT_DATE - INTERVAL '10' DAY  AS reg_from       -- 10 complete days; today is not included\\n),\\n-- Everyone with at least one successful deposit, on any brand.\\ndepositors AS (\\n    SELECT b.player_hk\\n    FROM operator_ro_normcasino.agg_billing_daily b\\n    CROSS JOIN params p\\n    WHERE b.as_of_date >= p.date_from\\n      AND b.as_of_date <  p.date_to_excl\\n      AND b.transaction_type   = 'deposit'\\n      AND b.transaction_status = 'Success'\\n      AND b.brand IN ('NORMCASINO', 'LACASINO', 'VOLKCASINO', 'IKRACASINO')\\n    GROUP BY 1\\n    HAVING SUM(b.transaction_count) > 0\\n)\\n-- Column names must match COLUMNS in Parse Athena Page and Collect Export Rows.\\nSELECT ps.brand                                                    AS \\\"Brand\\\",\\n       ps.player_id                                                AS \\\"User ID\\\",\\n       dp.first_name                                               AS \\\"First name\\\",\\n       dp.phone                                                    AS \\\"Phone Number\\\",\\n       DATE_DIFF('day', CAST(ps.registration_date AS DATE),\\n                 CURRENT_DATE)                                     AS \\\"Days Since Registration\\\"\\nFROM operator_ro_normcasino.agg_player_summary ps\\nCROSS JOIN params p\\nLEFT JOIN depositors d\\n  ON d.player_hk = ps.player_hk\\nJOIN operator_ro_normcasino.d_player dp\\n  ON dp.player_hk = ps.player_hk\\nWHERE ps.is_test = false\\n  AND ps.brand IN ('LACASINO')\\n  -- Registered in the last 10 complete days.\\n  AND CAST(ps.registration_date AS DATE) >= p.reg_from\\n  AND CAST(ps.registration_date AS DATE) <  CURRENT_DATE\\n  AND ps.player_deleted_date IS NULL\\n  AND d.player_hk IS NULL\\n  -- Only players with a phone number.\\n  AND NULLIF(TRIM(dp.phone), '') IS NOT NULL\\n  -- No streamers.\\n  AND NOT EXISTS (\\n        SELECT 1\\n        FROM operator_ro_normcasino.d_risk_tags_summary st\\n        WHERE st.player_hk = ps.player_hk\\n          AND st.tag_id = 39\\n  )\\nORDER BY \\\"Brand\\\", \\\"Days Since Registration\\\", \\\"User ID\\\"\\n\",\n  \"QueryExecutionContext\": { \"Database\": \"{{ $('Config').first().json.athenaDatabase }}\", \"Catalog\": \"{{ $('Config').first().json.athenaCatalog || 'AwsDataCatalog' }}\" },\n  \"WorkGroup\": \"{{ $('Config').first().json.athenaWorkgroup || 'primary' }}\",\n  \"ClientRequestToken\": \"n8n-registered-players-without-deposits-la-execution-{ $execution.id }\"\n  {{ $('Config').first().json.athenaOutputLocation ? ', \"ResultConfiguration\": { \"OutputLocation\": \"' + $('Config').first().json.athenaOutputLocation + '\" }' : '' }}\n}",
+        "jsonBody": "={\n  \"QueryString\": \"WITH params AS (\\n    SELECT DATE '2026-01-01'                 AS date_from,     -- \\\"all time\\\"; the bound lets Athena prune partitions\\n           CURRENT_DATE                      AS date_to_excl,\\n           CURRENT_DATE - INTERVAL '10' DAY  AS reg_from       -- 10 complete days; today is not included\\n),\\n-- Everyone with at least one successful deposit, on any brand.\\ndepositors AS (\\n    SELECT b.player_hk\\n    FROM operator_ro_normcasino.agg_billing_daily b\\n    CROSS JOIN params p\\n    WHERE b.as_of_date >= p.date_from\\n      AND b.as_of_date <  p.date_to_excl\\n      AND b.transaction_type   = 'deposit'\\n      AND b.transaction_status = 'Success'\\n      AND b.brand IN ('NORMCASINO', 'LACASINO', 'VOLKCASINO', 'IKRACASINO')\\n    GROUP BY 1\\n    HAVING SUM(b.transaction_count) > 0\\n)\\n-- Column names must match COLUMNS in Parse Athena Page and Collect Export Rows.\\nSELECT ps.brand                                                    AS \\\"Brand\\\",\\n       ps.player_id                                                AS \\\"User ID\\\",\\n       dp.first_name                                               AS \\\"First name\\\",\\n       dp.phone                                                    AS \\\"Phone Number\\\",\\n       DATE_DIFF('day', CAST(ps.registration_date AS DATE),\\n                 CURRENT_DATE)                                     AS \\\"Days Since Registration\\\"\\nFROM operator_ro_normcasino.agg_player_summary ps\\nCROSS JOIN params p\\nLEFT JOIN depositors d\\n  ON d.player_hk = ps.player_hk\\nJOIN operator_ro_normcasino.d_player dp\\n  ON dp.player_hk = ps.player_hk\\nWHERE ps.is_test = false\\n  AND ps.brand IN ('LACASINO')\\n  -- Registered in the last 10 complete days.\\n  AND CAST(ps.registration_date AS DATE) >= p.reg_from\\n  AND CAST(ps.registration_date AS DATE) <  CURRENT_DATE\\n  AND ps.player_deleted_date IS NULL\\n  AND d.player_hk IS NULL\\n  -- Only players with a phone number.\\n  AND NULLIF(TRIM(dp.phone), '') IS NOT NULL\\n  -- No streamers.\\n  AND NOT EXISTS (\\n        SELECT 1\\n        FROM operator_ro_normcasino.d_risk_tags_summary st\\n        WHERE st.player_hk = ps.player_hk\\n          AND st.tag_id = 39\\n  )\\nORDER BY \\\"Brand\\\", \\\"Days Since Registration\\\", \\\"User ID\\\"\\n\",\n  \"QueryExecutionContext\": { \"Database\": \"{{ $('Config').first().json.athenaDatabase }}\", \"Catalog\": \"{{ $('Config').first().json.athenaCatalog || 'AwsDataCatalog' }}\" },\n  \"WorkGroup\": \"{{ $('Config').first().json.athenaWorkgroup || 'primary' }}\",\n  \"ClientRequestToken\": \"n8n-registered-players-without-deposits-la-execution-{{ $execution.id }}\"\n  {{ $('Config').first().json.athenaOutputLocation ? ', \"ResultConfiguration\": { \"OutputLocation\": \"' + $('Config').first().json.athenaOutputLocation + '\" }' : '' }}\n}",
         "options": {
           "timeout": 30000,
           "response": {
@@ -560,6 +560,64 @@
       ],
       "id": "e7c0a150-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
       "name": "Athena Poll Timeout"
+    },
+    {
+      "parameters": {
+        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $('Config').first().json.outputSheetId }}?fields=properties.title",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1580,
+        -100
+      ],
+      "id": "e7c0ab00-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "Read Sheet Title",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "Current title of the output spreadsheet, so Stamp Sheet Title keeps the name and only replaces the timestamp suffix."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $('Config').first().json.outputSheetId }}:batchUpdate",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ requests: [{ updateSpreadsheetProperties: { properties: { title: String($json.properties.title).replace(/\\s*\\(обновлено [^)]*\\)\\s*$/u, '') + ' (обновлено ' + $now.toFormat('dd.MM HH:mm') + ')' }, fields: 'title' } }] }) }}"
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1800,
+        -100
+      ],
+      "id": "e7c0ab10-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+      "name": "Stamp Sheet Title",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "Renames the output spreadsheet to \"<name> (обновлено dd.MM HH:mm)\", Europe/Warsaw time, replacing an earlier stamp. Runs last, only after the rows were written, so the stamp in the title means the data is fresh. All four export workflows share this spreadsheet and stamp the same title."
     }
   ],
   "connections": {
@@ -738,6 +796,28 @@
         [
           {
             "node": "Write Rows to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Rows to Sheet": {
+      "main": [
+        [
+          {
+            "node": "Read Sheet Title",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Sheet Title": {
+      "main": [
+        [
+          {
+            "node": "Stamp Sheet Title",
             "type": "main",
             "index": 0
           }
