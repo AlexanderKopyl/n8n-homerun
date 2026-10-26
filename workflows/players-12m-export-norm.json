@@ -1,0 +1,758 @@
+{
+  "name": "Players 12M Export - Norm",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 6 * * *"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -1100,
+        0
+      ],
+      "id": "b7600109-ac80-5ca8-9428-890197bbdd8c",
+      "name": "Schedule Trigger",
+      "notes": "06:00 Europe/Warsaw daily. The 12-month window ends yesterday (complete days only)."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "1bf4c2b2-df75-5265-bcf1-7df4aa9d2cf9",
+              "name": "athenaRegion",
+              "value": "eu-central-1",
+              "type": "string"
+            },
+            {
+              "id": "47c39de1-8eb5-53e2-a17e-c817d84d823e",
+              "name": "athenaDatabase",
+              "value": "operator_ro_normcasino",
+              "type": "string"
+            },
+            {
+              "id": "223fd336-7945-5bb6-8d85-f36ba6b5c022",
+              "name": "athenaCatalog",
+              "value": "Athena-bebohuex",
+              "type": "string"
+            },
+            {
+              "id": "38474437-b0b9-5df0-8822-74b6339c47ba",
+              "name": "athenaWorkgroup",
+              "value": "primary",
+              "type": "string"
+            },
+            {
+              "id": "46261071-77d4-555b-92a6-151cf81b6a15",
+              "name": "athenaOutputLocation",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "47d1051d-6916-5c9e-8e17-cd9e50f90f12",
+              "name": "outputSheetId",
+              "value": "1x9DxNS-AEjB3jjsegrd1yRflHwoKvaUMwZsi1WtyAYM",
+              "type": "string"
+            },
+            {
+              "id": "7d718a45-dd69-5d35-bc03-0edf9cf7c41e",
+              "name": "outputSheetTab",
+              "value": "NORMCASINO",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -880,
+        0
+      ],
+      "id": "49c3d087-b97a-5ece-9aa3-4f8473a49ccd",
+      "name": "Config",
+      "notes": "outputSheetId/outputSheetTab: where the export is written (tab \"NORMCASINO\" must exist; it is cleared and rewritten on every run). Athena settings as in the other exports."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://athena.{{ $('Config').first().json.athenaRegion }}.amazonaws.com/",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "awsAssumeRole",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-amz-json-1.1"
+            },
+            {
+              "name": "X-Amz-Target",
+              "value": "AmazonAthena.StartQueryExecution"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"QueryString\": \"with params as (\\n    select date '2026-01-01'                         as lifetime_from, -- «всё время»\\n           current_date - interval '12' month        as date_from,     -- окно 12M\\n           current_date                              as date_to_excl   -- по вчера включительно\\n),\\n\\npayments as (\\n    -- успешные депозиты и выводы: 12M и последний депозит за всё время\\n    select b.player_hk,\\n           sum(case when b.transaction_type = 'deposit'\\n                     and b.as_of_date >= p.date_from\\n                    then b.transaction_count else 0 end)        as deposit_count_12m,\\n           sum(case when b.transaction_type = 'deposit'\\n                     and b.as_of_date >= p.date_from\\n                    then b.amount_eur else 0 end)               as deposit_amount_12m,\\n           sum(case when b.transaction_type = 'withdrawal'\\n                     and b.as_of_date >= p.date_from\\n                    then b.transaction_count else 0 end)        as withdrawal_count_12m,\\n           sum(case when b.transaction_type = 'withdrawal'\\n                     and b.as_of_date >= p.date_from\\n                    then abs(b.amount_eur) else 0 end)          as withdrawal_amount_12m,\\n           max(case when b.transaction_type = 'deposit'\\n                     and b.transaction_count > 0\\n                    then b.as_of_date end)                      as last_deposit_date\\n    from operator_ro_normcasino.agg_billing_daily b\\n    cross join params p\\n    where b.as_of_date >= least(p.lifetime_from, cast(p.date_from as date))\\n      and b.as_of_date <  p.date_to_excl\\n      and b.transaction_type   in ('deposit', 'withdrawal')\\n      and b.transaction_status = 'Success'\\n      and b.is_test = false\\n      and b.brand = 'NORMCASINO'\\n    group by 1\\n),\\n\\ncasino as (\\n    -- казино за 12M, EUR, канон GR8\\n    select d.player_hk,\\n           sum(d.casino_turnover_eur)                                 as turnover_casino_12m,\\n           sum(d.casino_ggr_eur)                                      as ggr_casino_12m,\\n           sum(d.casino_bets_count)                                   as bets_casino_12m,\\n           sum(coalesce(d.casino_bonus_eur, 0)\\n               + coalesce(d.casino_crm_bonuses_clear_amount_eur, 0))  as clear_bonus_casino_12m\\n    from operator_ro_normcasino.agg_product_dashboard_daily d\\n    cross join params p\\n    where d.as_of_date >= p.date_from\\n      and d.as_of_date <  p.date_to_excl\\n      and d.is_test = false\\n      and d.brand = 'NORMCASINO'\\n    group by 1\\n),\\n\\nmail as (\\n    -- письма за 12M: отправки, доставки, открытия, последнее открытие\\n    select c.player_hk,\\n           sum(c.sent_cnt)                                     as sent_12m,\\n           sum(c.delivered_cnt)                                as delivered_12m,\\n           sum(c.opened_cnt)                                   as opened_12m,\\n           max(case when c.opened_cnt > 0 then c.action_date end) as last_open_date\\n    from operator_ro_normcasino.agg_communications_daily c\\n    cross join params p\\n    where c.action_date >= p.date_from\\n      and c.action_date <  p.date_to_excl\\n      and c.channel = 'mail'\\n      and c.brand = 'NORMCASINO'\\n    group by 1\\n),\\n\\nrates as (\\n    -- курс валюта → EUR на дату; max() страхует от дублей в справочнике\\n    select r.from_currency,\\n           r.exchange_date,\\n           max(r.inverted_rate) as inverted_rate\\n    from operator_ro_normcasino.d_fx_rate r\\n    where r.to_currency = 'EUR'\\n    group by 1, 2\\n)\\n\\nselect ps.brand                                                         as \\\"Brand\\\",\\n       ps.player_id                                                     as \\\"Account\\\",\\n       ps.risk_business_segment                                         as \\\"Risk business segment\\\",\\n       ps.risk_casino_segment                                           as \\\"Risk casino segment\\\",\\n       dp.phone                                                         as \\\"Phone\\\",\\n       dp.email                                                         as \\\"Email\\\",\\n       ps.is_email_verified                                             as \\\"Email verified\\\",\\n       ps.aff_id                                                        as \\\"Aff id\\\",\\n       pay.last_deposit_date                                            as \\\"Last Deposit date\\\",\\n       coalesce(pay.deposit_count_12m, 0)                               as \\\"Deposit count 12M\\\",\\n       round(coalesce(pay.deposit_amount_12m, 0), 2)                    as \\\"Deposit amount 12M\\\",\\n       round(coalesce(pay.withdrawal_amount_12m, 0), 2)                 as \\\"Withdrawal amount 12M\\\",\\n       round(cast(cas.turnover_casino_12m as double)\\n             / nullif(cas.bets_casino_12m, 0), 2)                       as \\\"Average bet Casino 12M\\\",\\n       round(cast(pay.deposit_amount_12m as double)\\n             / nullif(pay.deposit_count_12m, 0), 2)                     as \\\"Average deposit 12M\\\",\\n       round(cas.ggr_casino_12m, 2)                                     as \\\"GGR Casino 12M\\\",\\n       round(case when ps.last_withdrawal_currency = 'EUR'\\n                  then abs(ps.last_withdrawal_amount)\\n                  else abs(ps.last_withdrawal_amount)\\n                       / nullif(r_lw.inverted_rate, 0)\\n             end, 2)                                                    as \\\"Last withdrawal amount\\\",\\n       round(cast(cas.ggr_casino_12m as double) * 100\\n             / nullif(cast(cas.turnover_casino_12m as double), 0), 2)   as \\\"Margin Casino 12M, %\\\",\\n       round(cas.ggr_casino_12m - cas.clear_bonus_casino_12m, 2)        as \\\"NGR Casino 12M\\\",\\n       round(cas.clear_bonus_casino_12m, 2)                             as \\\"Total Casino Clear bonus amount 12M\\\",\\n       coalesce(pay.withdrawal_count_12m, 0)                            as \\\"Withdrawal count 12M\\\",\\n       cast(ps.registration_date as timestamp(3))                       as \\\"Registration date\\\",\\n       cast(ps.first_deposit as timestamp(3))                           as \\\"First Deposit date\\\",\\n       cast(ps.first_bet_casino as timestamp(3))                        as \\\"First Bet Casino date\\\",\\n       cast(ps.last_bet_casino as timestamp(3))                         as \\\"Last Bet Casino date\\\",\\n       round(cast(cas.clear_bonus_casino_12m as double) * 100\\n             / nullif(cast(cas.ggr_casino_12m as double), 0), 2)        as \\\"Bonus rate Casino 12M, %\\\",\\n       cast(ps.last_withdrawal as timestamp(3))                         as \\\"Last Withdrawal date\\\",\\n       date_diff('day', pay.last_deposit_date, current_date)            as \\\"LDD\\\",\\n       round(cast(pay.deposit_amount_12m - pay.withdrawal_amount_12m as double) * 100\\n             / nullif(cast(pay.deposit_amount_12m as double), 0), 2)    as \\\"Hold %\\\",\\n       coalesce(m.sent_12m, 0)                                          as \\\"Emails sent 12M\\\",\\n       coalesce(m.opened_12m, 0)                                        as \\\"Emails opened 12M\\\",\\n       round(cast(m.opened_12m as double) * 100\\n             / nullif(m.delivered_12m, 0), 2)                           as \\\"Email open rate 12M, %\\\",\\n       m.last_open_date                                                 as \\\"Last email open date\\\"\\nfrom operator_ro_normcasino.agg_player_summary ps\\njoin operator_ro_normcasino.d_player dp\\n  on dp.player_hk = ps.player_hk\\nleft join payments pay\\n  on pay.player_hk = ps.player_hk\\nleft join casino cas\\n  on cas.player_hk = ps.player_hk\\nleft join mail m\\n  on m.player_hk = ps.player_hk\\nleft join rates r_lw\\n  on r_lw.from_currency = ps.last_withdrawal_currency\\n and r_lw.exchange_date = cast(ps.last_withdrawal as date)\\nwhere ps.is_test = false\\n  and coalesce(dp.is_test, false) = false\\n  -- только депозиторы: успешный депозит в billing за всё время\\n  and pay.last_deposit_date is not null\\n  and ps.brand = 'NORMCASINO'\\n  -- без стримеров\\n  and not exists (\\n        select 1\\n        from operator_ro_normcasino.d_risk_tags_summary st\\n        where st.player_hk = ps.player_hk\\n          and st.tag_id = 39\\n  )\\norder by \\\"Brand\\\", \\\"GGR Casino 12M\\\" desc nulls last, \\\"Account\\\"\",\n  \"QueryExecutionContext\": { \"Database\": \"{{ $('Config').first().json.athenaDatabase }}\", \"Catalog\": \"{{ $('Config').first().json.athenaCatalog || 'AwsDataCatalog' }}\" },\n  \"WorkGroup\": \"{{ $('Config').first().json.athenaWorkgroup || 'primary' }}\",\n  \"ClientRequestToken\": \"n8n-players-12m-export-norm-execution-{{ $execution.id }}\"\n  {{ $('Config').first().json.athenaOutputLocation ? ', \"ResultConfiguration\": { \"OutputLocation\": \"' + $('Config').first().json.athenaOutputLocation + '\" }' : '' }}\n}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -660,
+        0
+      ],
+      "id": "f8d7e91d-b45f-56df-a7c1-e76b884f115d",
+      "name": "Execute Athena Query",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "ClientRequestToken is derived from the execution id, so a retry of this node rejoins the same Athena query instead of starting a second one."
+    },
+    {
+      "parameters": {
+        "amount": 15,
+        "unit": "seconds"
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -440,
+        0
+      ],
+      "id": "ac79f039-d9da-5cfb-bc7a-bd8082fd01d0",
+      "name": "Wait 15s"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://athena.{{ $('Config').first().json.athenaRegion }}.amazonaws.com/",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "awsAssumeRole",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-amz-json-1.1"
+            },
+            {
+              "name": "X-Amz-Target",
+              "value": "AmazonAthena.GetQueryExecution"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"QueryExecutionId\": \"{{ $('Execute Athena Query').first().json.QueryExecutionId }}\"\n}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -220,
+        0
+      ],
+      "id": "7d5a5a3a-4f42-5959-8274-267909470486",
+      "name": "Poll Athena Query Status",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "a9c99bf9-91dd-513e-a40b-e9e107d687bf",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "SUCCEEDED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Succeeded"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "6c795286-0d60-5156-b25f-14f585d6839f",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "QUEUED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Queued"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "f0707ab2-19ef-5996-a376-3fab9f770803",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "RUNNING",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Running"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "9a061f5c-8434-50c7-b8d4-234d63fa30e8",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "FAILED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Failed"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "229a6b8b-58df-54a0-bfe7-d5027deaf3eb",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "CANCELLED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Cancelled"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "Unexpected State"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        0,
+        0
+      ],
+      "id": "b0cc1e65-ea37-5837-b48e-4456a8d919bc",
+      "name": "Athena Query State"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "7fa72b35-13be-5de4-8f8c-331074b221f9",
+              "leftValue": "={{ $runIndex }}",
+              "rightValue": 120,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        260,
+        180
+      ],
+      "id": "ccbc27de-254d-57a3-b1d3-282976e16a9a",
+      "name": "Poll Attempts Remaining?",
+      "notes": "true -> wait and poll again; false -> give up after 120 polls (~30 min)"
+    },
+    {
+      "parameters": {
+        "errorMessage": "=Athena query {{ $json.QueryExecution.QueryExecutionId }} ended in state {{ $json.QueryExecution.Status.State }}. Reason: {{ $json.QueryExecution.Status.StateChangeReason || 'no StateChangeReason returned by Athena' }}. The sheet was not touched."
+      },
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        260,
+        400
+      ],
+      "id": "1775fe5f-7d34-529a-9586-e36cb21f2264",
+      "name": "Athena Query Failed"
+    },
+    {
+      "parameters": {
+        "errorMessage": "=Athena query {{ $('Execute Athena Query').first().json.QueryExecutionId }} did not finish within the polling budget of 120 polls x 15 s (~30 minutes). Last observed state: {{ $json.QueryExecution.Status.State }}. The sheet was not touched."
+      },
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        480,
+        300
+      ],
+      "id": "346028cf-d4b4-5c8d-86fb-b559d02cedbe",
+      "name": "Athena Poll Timeout"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $('Config').first().json.outputSheetId }}/values/{{ encodeURIComponent(\"'\" + String($('Config').first().json.outputSheetTab).replace(/'/g, \"''\") + \"'!A:AZ\") }}:clear",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        260,
+        -200
+      ],
+      "id": "76d4879d-cc30-542c-8cca-0656bad74ed4",
+      "name": "Clear Sheet",
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000,
+      "notes": "Clears columns A:AZ of the tab, wider than the data, so leftovers from a longer run or an older column layout do not linger. Runs only once Athena reports SUCCEEDED, so a failed query leaves yesterday's data in place."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://athena.{{ $('Config').first().json.athenaRegion }}.amazonaws.com/",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "awsAssumeRole",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-amz-json-1.1"
+            },
+            {
+              "name": "X-Amz-Target",
+              "value": "AmazonAthena.GetQueryResults"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"QueryExecutionId\": \"{{ $('Execute Athena Query').first().json.QueryExecutionId }}\",\n  \"MaxResults\": 1000{{ $runIndex > 0 ? ', \"NextToken\": ' + JSON.stringify($('Parse Athena Page').all(0, $runIndex - 1)[0].json.nextToken) : '' }}\n}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        480,
+        -200
+      ],
+      "id": "4c51b45a-9827-5c17-a00f-2fe5eb80f071",
+      "name": "Get Athena Results Page",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "Called once per page. Run 0 comes from Clear Sheet and has no NextToken; run N comes back from More Pages? and sends the NextToken that Parse Athena Page run N-1 received."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Athena Page\n//\n// Input : one item = one raw Athena GetQueryResults response (one page, up to 1000 rows).\n// Output: one item = { page, nextToken, rowCount, range, values } — this page as the 2D array\n//         that Append Page to Sheet sends to the Sheets API. Page 0 carries the header row first.\n//\n// Runs once per page, and every page is appended to the sheet straight away, so no node ever\n// holds the whole result in a single item. Export Summary adds up the rowCount of every run.\n\n// 100 pages x 1000 rows. A result this large means a filter has gone missing — and the\n// spreadsheet's own 10,000,000-cell limit is the real cap (see the docs) — investigate before raising it.\nconst MAX_PAGES = 100;\n\n// Sheet columns, in SQL order. Headers are the Athena column names (the SQL aliases).\n// `number` columns are sent as numbers so the sheet can sum and sort them; everything else as text,\n// so phone numbers keep their + and leading 0, ids are never reformatted and dates stay as Athena\n// printed them.\nconst COLUMNS = [\n  {\n    \"name\": \"Brand\",\n    \"type\": \"text\"\n  },\n  {\n    \"name\": \"Account\",\n    \"type\": \"text\"\n  },\n  {\n    \"name\": \"Risk business segment\",\n    \"type\": \"text\"\n  },\n  {\n    \"name\": \"Risk casino segment\",\n    \"type\": \"text\"\n  },\n  {\n    \"name\": \"Phone\",\n    \"type\": \"text\"\n  },\n  {\n    \"name\": \"Email\",\n    \"type\": \"text\"\n  },\n  {\n    \"name\": \"Email verified\",\n    \"type\": \"text\"\n  },\n  {\n    \"name\": \"Aff id\",\n    \"type\": \"text\"\n  },\n  {\n    \"name\": \"Last Deposit date\",\n    \"type\": \"text\"\n  },\n  {\n    \"name\": \"Deposit count 12M\",\n    \"type\": \"number\"\n  },\n  {\n    \"name\": \"Deposit amount 12M\",\n    \"type\": \"number\"\n  },\n  {\n    \"name\": \"Withdrawal amount 12M\",\n    \"type\": \"number\"\n  },\n  {\n    \"name\": \"Average bet Casino 12M\",\n    \"type\": \"number\"\n  },\n  {\n    \"name\": \"Average deposit 12M\",\n    \"type\": \"number\"\n  },\n  {\n    \"name\": \"GGR Casino 12M\",\n    \"type\": \"number\"\n  },\n  {\n    \"name\": \"Last withdrawal amount\",\n    \"type\": \"number\"\n  },\n  {\n    \"name\": \"Margin Casino 12M, %\",\n    \"type\": \"number\"\n  },\n  {\n    \"name\": \"NGR Casino 12M\",\n    \"type\": \"number\"\n  },\n  {\n    \"name\": \"Total Casino Clear bonus amount 12M\",\n    \"type\": \"number\"\n  },\n  {\n    \"name\": \"Withdrawal count 12M\",\n    \"type\": \"number\"\n  },\n  {\n    \"name\": \"Registration date\",\n    \"type\": \"text\"\n  },\n  {\n    \"name\": \"First Deposit date\",\n    \"type\": \"text\"\n  },\n  {\n    \"name\": \"First Bet Casino date\",\n    \"type\": \"text\"\n  },\n  {\n    \"name\": \"Last Bet Casino date\",\n    \"type\": \"text\"\n  },\n  {\n    \"name\": \"Bonus rate Casino 12M, %\",\n    \"type\": \"number\"\n  },\n  {\n    \"name\": \"Last Withdrawal date\",\n    \"type\": \"text\"\n  },\n  {\n    \"name\": \"LDD\",\n    \"type\": \"number\"\n  },\n  {\n    \"name\": \"Hold %\",\n    \"type\": \"number\"\n  },\n  {\n    \"name\": \"Emails sent 12M\",\n    \"type\": \"number\"\n  },\n  {\n    \"name\": \"Emails opened 12M\",\n    \"type\": \"number\"\n  },\n  {\n    \"name\": \"Email open rate 12M, %\",\n    \"type\": \"number\"\n  },\n  {\n    \"name\": \"Last email open date\",\n    \"type\": \"text\"\n  }\n];\n\n/** Athena returns every value as a string, or omits VarCharValue entirely for NULL. */\nfunction cellValue(cell) {\n  if (cell === null || cell === undefined) return null;\n  const raw = cell.VarCharValue;\n  if (raw === null || raw === undefined) return null;\n  return String(raw);\n}\n\n/** NULL becomes an empty cell. Unparseable numbers also become empty, never NaN. */\nfunction toCell(raw, type) {\n  if (raw === null || raw === undefined) return '';\n  const text = String(raw).trim();\n  if (text === '') return '';\n  if (type !== 'number') return text;\n  const parsed = Number(text);\n  return Number.isFinite(parsed) ? parsed : '';\n}\n\n/** 1 -> A, 26 -> Z, 27 -> AA, 33 -> AG. */\nfunction columnLetter(n) {\n  let s = '';\n  while (n > 0) {\n    const r = (n - 1) % 26;\n    s = String.fromCharCode(65 + r) + s;\n    n = Math.floor((n - 1) / 26);\n  }\n  return s;\n}\n\nconst page = $runIndex;\n\nif (page >= MAX_PAGES) {\n  throw new Error(\n    `Athena result exceeds ${MAX_PAGES} pages (${MAX_PAGES * 1000} rows). The export query ` +\n      'has probably lost a filter — investigate before raising MAX_PAGES. The tab holds the pages written so far.',\n  );\n}\n\nconst inputItems = $input.all();\nif (inputItems.length !== 1) {\n  throw new Error(\n    `Parse Athena Page expected exactly 1 input item from Athena, received ${inputItems.length}.`,\n  );\n}\n\nconst response = inputItems[0].json ?? {};\nconst resultSet = response.ResultSet;\nif (!resultSet || !Array.isArray(resultSet.Rows)) {\n  throw new Error(\n    'Unexpected Athena response: ResultSet.Rows is missing. Check the Get Athena Results Page node output.',\n  );\n}\n\nconst athenaColumns = (resultSet.ResultSetMetadata?.ColumnInfo ?? []).map((column) => column?.Name);\nconst missingColumns = COLUMNS.map((c) => c.name).filter((name) => !athenaColumns.includes(name));\nif (missingColumns.length > 0) {\n  throw new Error(\n    `Athena result is missing column(s): ${missingColumns.join(', ')}. The export SQL and this ` +\n      'node have drifted apart — update both together.',\n  );\n}\n\n// Athena prepends a header row, on the first page only.\nlet rows = resultSet.Rows;\nif (page === 0) {\n  const firstRowValues = (rows[0]?.Data ?? []).map(cellValue);\n  const firstRowIsHeader =\n    firstRowValues.length === athenaColumns.length &&\n    firstRowValues.every((value, index) => value === athenaColumns[index]);\n  if (firstRowIsHeader) rows = rows.slice(1);\n}\n\n// Map each sheet column to its position in the Athena result, so column order in the SQL\n// may differ from the sheet without breaking anything.\nconst columnIndex = COLUMNS.map((c) => athenaColumns.indexOf(c.name));\n\nconst values = [];\nif (page === 0) values.push(COLUMNS.map((c) => c.name));\n\nlet rowCount = 0;\nfor (const row of rows) {\n  const cells = row?.Data ?? [];\n  const record = COLUMNS.map((c, i) => toCell(cellValue(cells[columnIndex[i]]), c.type));\n  if (record.every((value) => value === '')) continue;\n  values.push(record);\n  rowCount += 1;\n}\n\nconst tab = String($('Config').first().json.outputSheetTab ?? '').trim();\nif (tab === '') {\n  throw new Error('Config.outputSheetTab is empty. Set it to the name of the tab to overwrite.');\n}\nconst quotedTab = `'${tab.replace(/'/g, \"''\")}'`;\n\nreturn [\n  {\n    json: {\n      page,\n      nextToken: response.NextToken ?? null,\n      rowCount,\n      // values:append finds the table in this range and writes below its last row.\n      range: `${quotedTab}!A:${columnLetter(COLUMNS.length)}`,\n      values,\n    },\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        -200
+      ],
+      "id": "87132c41-ae63-575e-add6-bda76b2f3cc0",
+      "name": "Parse Athena Page"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://sheets.googleapis.com/v4/spreadsheets/{{ $('Config').first().json.outputSheetId }}/values/{{ encodeURIComponent($json.range) }}:append",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "valueInputOption",
+              "value": "RAW"
+            },
+            {
+              "name": "insertDataOption",
+              "value": "OVERWRITE"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ range: $json.range, majorDimension: 'ROWS', values: $json.values }) }}",
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        920,
+        -200
+      ],
+      "id": "bdb036b7-8d25-5ad1-b798-62d8f38b1882",
+      "name": "Append Page to Sheet",
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000,
+      "notes": "One values:append call per Athena page (up to 1000 rows). Append writes below the last filled row and grows the grid as needed, so the tab never has to be pre-sized. Retries absorb Sheets rate limits (429)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cbc55617-f912-5215-8c8a-18829399356b",
+              "leftValue": "={{ $('Parse Athena Page').all(0, $runIndex)[0].json.nextToken }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1140,
+        -200
+      ],
+      "id": "e4688548-75a0-5e3a-a0d3-2d85913ce163",
+      "name": "More Pages?",
+      "notes": "true -> fetch the next page with the NextToken of the page just written; false -> every page is in the sheet."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Export Summary\n//\n// Input : one item = the Sheets response of the last Append Page to Sheet call.\n// Output: one item = { tab, pages, rowCount, finishedAt } — what this run wrote.\n//\n// Adds up every run of Parse Athena Page. Only for the execution log: look here when the\n// tab looks too short or too long.\n\nconst inputItems = $input.all();\nif (inputItems.length !== 1) {\n  throw new Error(`Export Summary expected exactly 1 input item, received ${inputItems.length}.`);\n}\n\nlet pages = 0;\nlet rowCount = 0;\nfor (let run = 0; run < 100000; run++) {\n  let pageItems;\n  try {\n    pageItems = $('Parse Athena Page').all(0, run);\n  } catch (error) {\n    break;\n  }\n  if (!Array.isArray(pageItems) || pageItems.length === 0) break;\n  if (pageItems.length !== 1) {\n    throw new Error(`Parse Athena Page run ${run} produced ${pageItems.length} items, expected 1.`);\n  }\n  pages += 1;\n  rowCount += Number(pageItems[0].json.rowCount ?? 0);\n}\n\nreturn [\n  {\n    json: {\n      tab: $('Config').first().json.outputSheetTab,\n      pages,\n      rowCount,\n      lastUpdatedRange: inputItems[0].json.updates?.updatedRange ?? null,\n      finishedAt: $now.toISO(),\n    },\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        -100
+      ],
+      "id": "32dc70d2-0255-5b32-bd41-6f214e764b2f",
+      "name": "Export Summary"
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Execute Athena Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Athena Query": {
+      "main": [
+        [
+          {
+            "node": "Wait 15s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 15s": {
+      "main": [
+        [
+          {
+            "node": "Poll Athena Query Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll Athena Query Status": {
+      "main": [
+        [
+          {
+            "node": "Athena Query State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Athena Query State": {
+      "main": [
+        [
+          {
+            "node": "Clear Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Poll Attempts Remaining?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Poll Attempts Remaining?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Athena Query Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Athena Query Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Athena Query Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll Attempts Remaining?": {
+      "main": [
+        [
+          {
+            "node": "Wait 15s",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Athena Poll Timeout",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear Sheet": {
+      "main": [
+        [
+          {
+            "node": "Get Athena Results Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Athena Results Page": {
+      "main": [
+        [
+          {
+            "node": "Parse Athena Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Athena Page": {
+      "main": [
+        [
+          {
+            "node": "Append Page to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append Page to Sheet": {
+      "main": [
+        [
+          {
+            "node": "More Pages?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "More Pages?": {
+      "main": [
+        [
+          {
+            "node": "Get Athena Results Page",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Export Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Warsaw",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true
+  }
+}

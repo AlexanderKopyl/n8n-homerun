@@ -111,11 +111,16 @@ depositing-players-export-norm.json       Daily calling list of depositors (Norm
 depositing-players-export-la.json         Daily calling list of depositors (LACASINO), minus recent GR Base calls -> 'LA' tab
 registered-players-without-deposits-norm.json  Registrants of the last 10 days without a deposit (NORMCASINO) -> 'Reg Norm' tab
 registered-players-without-deposits-la.json    Registrants of the last 10 days without a deposit (LACASINO) -> 'Reg LA' tab
+players-12m-export-norm.json     Daily depositors with 12-month metrics (NORMCASINO) -> 'NORMCASINO' tab, page by page
+players-12m-export-la.json       Daily depositors with 12-month metrics (LACASINO) -> 'LACASINO' tab, page by page
+players-12m-export-volk.json     Daily depositors with 12-month metrics (VOLKCASINO) -> 'VOLKCASINO' tab, page by page
 ```
 
 Depositing Players Export (Norm and LA) setup: [docs/workflows/depositing-players-export.md](docs/workflows/depositing-players-export.md).
 
 Registered Players Without Deposits (Norm and LA) setup: [docs/workflows/registered-players-without-deposits.md](docs/workflows/registered-players-without-deposits.md).
+
+Players 12M Export (Norm, LA and Volk) setup: [docs/workflows/players-12m-export.md](docs/workflows/players-12m-export.md).
 
 Configuration and testing: [docs/workflows/analytics-slack-report.md](docs/workflows/analytics-slack-report.md).
 
