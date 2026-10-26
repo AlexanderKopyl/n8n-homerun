@@ -7,7 +7,7 @@
           "interval": [
             {
               "field": "cronExpression",
-              "expression": "0 6 * * *"
+              "expression": "0 5 * * *"
             }
           ]
         }
@@ -20,7 +20,7 @@
       ],
       "id": "b7600109-ac80-5ca8-9428-890197bbdd8c",
       "name": "Schedule Trigger",
-      "notes": "06:00 Europe/Warsaw daily. The 12-month window ends yesterday (complete days only)."
+      "notes": "05:00 Europe/Kyiv daily. The 12-month window ends yesterday (complete days only)."
     },
     {
       "parameters": {
@@ -750,7 +750,7 @@
   },
   "settings": {
     "executionOrder": "v1",
-    "timezone": "Europe/Warsaw",
+    "timezone": "Europe/Kyiv",
     "saveDataErrorExecution": "all",
     "saveDataSuccessExecution": "all",
     "saveManualExecutions": true

@@ -4,11 +4,11 @@ Three scheduled workflows, one per brand, that each run one Athena query and rew
 the **players spreadsheet** with every depositor of the brand and their last-12-month metrics:
 deposits, withdrawals, casino turnover/GGR/NGR, bonuses, e-mail engagement and key dates.
 
-| Workflow | File | Brand | Output tab | Schedule (Europe/Warsaw) |
+| Workflow | File | Brand | Output tab | Schedule (Europe/Kyiv) |
 |---|---|---|---|---|
-| Players 12M Export - Norm | [players-12m-export-norm.json](../../workflows/players-12m-export-norm.json) | `NORMCASINO` | `NORMCASINO` | 06:00 |
-| Players 12M Export - LA | [players-12m-export-la.json](../../workflows/players-12m-export-la.json) | `LACASINO` | `LACASINO` | 06:20 |
-| Players 12M Export - Volk | [players-12m-export-volk.json](../../workflows/players-12m-export-volk.json) | `VOLKCASINO` | `VOLKCASINO` | 06:40 |
+| Players 12M Export - Norm | [players-12m-export-norm.json](../../workflows/players-12m-export-norm.json) | `NORMCASINO` | `NORMCASINO` | 05:00 |
+| Players 12M Export - LA | [players-12m-export-la.json](../../workflows/players-12m-export-la.json) | `LACASINO` | `LACASINO` | 05:20 |
+| Players 12M Export - Volk | [players-12m-export-volk.json](../../workflows/players-12m-export-volk.json) | `VOLKCASINO` | `VOLKCASINO` | 05:40 |
 
 Output spreadsheet (ships in `Config`): `1x9DxNS-AEjB3jjsegrd1yRflHwoKvaUMwZsi1WtyAYM`, one tab per brand.
 
@@ -123,13 +123,13 @@ on other tabs.
 ### 5. Schedule and activate
 
 ```text
-0 6 * * *       # Norm  06:00 daily, Europe/Warsaw
-20 6 * * *      # LA    06:20
-40 6 * * *      # Volk  06:40
+0 5 * * *       # Norm  05:00 daily, Europe/Kyiv
+20 5 * * *      # LA    05:20
+40 5 * * *      # Volk  05:40
 ```
 
 Staggered so the three Athena queries do not compete for the workgroup and the three writes
-do not share the Sheets per-user write quota. The workflow timezone is `Europe/Warsaw`, set in
+do not share the Sheets per-user write quota. The workflow timezone is `Europe/Kyiv`, set in
 the workflow settings. The 12-month window ends yesterday (complete days only).
 
 Imported workflows arrive inactive.
