@@ -7,7 +7,7 @@
           "interval": [
             {
               "field": "cronExpression",
-              "expression": "20 5 * * *"
+              "expression": "20 8 * * *"
             }
           ]
         }
@@ -20,7 +20,7 @@
       ],
       "id": "b7600109-ac80-5ca8-9428-890197bbdd8c",
       "name": "Schedule Trigger",
-      "notes": "05:20 Europe/Kyiv daily. The 12-month window ends yesterday (complete days only)."
+      "notes": "08:20 Europe/Kyiv daily. The 12-month window ends yesterday (complete days only)."
     },
     {
       "parameters": {

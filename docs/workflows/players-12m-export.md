@@ -6,9 +6,9 @@ deposits, withdrawals, casino turnover/GGR/NGR, bonuses, e-mail engagement and k
 
 | Workflow | File | Brand | Output tab | Schedule (Europe/Kyiv) |
 |---|---|---|---|---|
-| Players 12M Export - Norm | [players-12m-export-norm.json](../../workflows/players-12m-export-norm.json) | `NORMCASINO` | `NORMCASINO` | 05:00 |
-| Players 12M Export - LA | [players-12m-export-la.json](../../workflows/players-12m-export-la.json) | `LACASINO` | `LACASINO` | 05:20 |
-| Players 12M Export - Volk | [players-12m-export-volk.json](../../workflows/players-12m-export-volk.json) | `VOLKCASINO` | `VOLKCASINO` | 05:40 |
+| Players 12M Export - Norm | [players-12m-export-norm.json](../../workflows/players-12m-export-norm.json) | `NORMCASINO` | `NORMCASINO` | 08:00 |
+| Players 12M Export - LA | [players-12m-export-la.json](../../workflows/players-12m-export-la.json) | `LACASINO` | `LACASINO` | 08:20 |
+| Players 12M Export - Volk | [players-12m-export-volk.json](../../workflows/players-12m-export-volk.json) | `VOLKCASINO` | `VOLKCASINO` | 08:40 |
 
 Output spreadsheet (ships in `Config`): `1x9DxNS-AEjB3jjsegrd1yRflHwoKvaUMwZsi1WtyAYM`, one tab per brand.
 
@@ -123,9 +123,9 @@ on other tabs.
 ### 5. Schedule and activate
 
 ```text
-0 5 * * *       # Norm  05:00 daily, Europe/Kyiv
-20 5 * * *      # LA    05:20
-40 5 * * *      # Volk  05:40
+0 8 * * *       # Norm  08:00 daily, Europe/Kyiv
+20 8 * * *      # LA    08:20
+40 8 * * *      # Volk  08:40
 ```
 
 Staggered so the three Athena queries do not compete for the workgroup and the three writes
