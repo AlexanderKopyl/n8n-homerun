@@ -7,7 +7,7 @@ called in the last three days**, read from that brand's **GR Base spreadsheet**.
 
 | Workflow | File | Brands | Output tab | Call history read from |
 |---|---|---|---|---|
-| Depositing Players Export - Norm | [depositing-players-export-norm.json](../../workflows/depositing-players-export-norm.json) | `NORMCASINO`, `VOLKCASINO`, `IKRACASINO` | `Norm` | GR Base Norm |
+| Depositing Players Export - Norm | [depositing-players-export-norm.json](../../workflows/depositing-players-export-norm.json) | `NORMCASINO` | `Norm` | GR Base Norm |
 | Depositing Players Export - LA | [depositing-players-export-la.json](../../workflows/depositing-players-export-la.json) | `LACASINO` | `LA` | GR Base LA |
 
 Three spreadsheets are involved, and the ids ship in `Config`:
@@ -19,7 +19,7 @@ Three spreadsheets are involved, and the ids ship in `Config`:
 | GR Base LA (read) | `1UnpFp9HxEgiTnisCBn9JUWjo8Zrl8C_jgHfdlTE2ghU` | LA |
 
 The two files are generated from one template and differ only in the brand filter of the
-SQL, the node ids and the name. Fix a bug in one and apply it to the other.
+SQL, the node ids, the name and the poll interval (LA: `Wait 5s`, Norm: `Wait 15s`). Fix a bug in one and apply it to the other.
 
 Verified against n8n `2.20.7`.
 
@@ -38,7 +38,7 @@ read nothing from the host: no `$env`, no `$vars`, no dependency on this reposit
 Schedule Trigger
   -> Config                        (deployment settings)
   -> Execute Athena Query          (StartQueryExecution)
-  -> Wait 5s
+  -> Wait 5s                       (Norm: Wait 15s)
   -> Poll Athena Query Status      (GetQueryExecution)
   -> Athena Query State            (Switch)
        SUCCEEDED  -> Get Athena Results Page   (GetQueryResults, 1000 rows)
@@ -56,8 +56,8 @@ Schedule Trigger
                                    -> Write Rows to Sheet    (output sheet: values.update)
                                    -> Read Sheet Title       (output sheet: properties.title)
                                    -> Stamp Sheet Title      (output sheet: batchUpdate, title)
-       QUEUED     -> Poll Attempts Remaining? -> back to Wait 5s
-       RUNNING    -> Poll Attempts Remaining? -> back to Wait 5s
+       QUEUED     -> Poll Attempts Remaining? -> back to Wait
+       RUNNING    -> Poll Attempts Remaining? -> back to Wait
        FAILED     -> Athena Query Failed   (Stop and Error)
        CANCELLED  -> Athena Query Failed   (Stop and Error)
        fallback   -> Athena Query Failed   (Stop and Error)
@@ -116,7 +116,7 @@ Workflows -> Import from File -> depositing-players-export-la.json
 
 In the output spreadsheet create the tabs `Norm` and `LA`. They must exist — the Sheets API
 does not create them — and columns `A:Z` of each belong to the workflow: they are cleared
-and the data is rewritten into `A:N` on every run. Nothing needs to change in GR Base.
+and the data is rewritten into `A:P` on every run. Nothing needs to change in GR Base.
 
 ### 3. Fill in the `Config` node (in both workflows)
 
@@ -124,7 +124,7 @@ and the data is rewritten into `A:N` on every run. Nothing needs to change in GR
 |---|---|---|
 | `athenaRegion` | `eu-central-1` | Keep it equal to the region set on the AWS credential. |
 | `athenaDatabase` | `operator_ro_normcasino` | Query context. The SQL fully qualifies its tables. |
-| `athenaCatalog` | `AwsDataCatalog` | Falls back to `AwsDataCatalog` when left empty. |
+| `athenaCatalog` | `Athena-bebohuex` | Falls back to `AwsDataCatalog` when left empty. |
 | `athenaWorkgroup` | `primary` | Falls back to `primary` when left empty. |
 | `athenaOutputLocation` | `s3://bucket/prefix/` | Leave **empty** if the workgroup enforces a result location. |
 | `outputSheetId` | `1Ic93...HmY` | The output spreadsheet: the long id between `/d/` and `/edit` in its URL. Same in both workflows. |
@@ -162,7 +162,7 @@ The SQL lives in `Execute Athena Query` and decides who is a candidate and in wh
 | Rule | Where |
 |---|---|
 | At least one successful deposit since `2026-01-01` (effectively all time) | `payments` CTE, `deposit_count > 0` |
-| Brand filter (Norm: three brands; LA: `LACASINO`) | `payments` CTE and the final `WHERE` |
+| Brand filter (Norm: `NORMCASINO`; LA: `LACASINO`) | `payments` CTE and the final `WHERE` |
 | Test accounts excluded | `is_test = false` on billing and player |
 | Phone number present and not blank | final `WHERE` |
 | Streamers (risk tag `39`) excluded | `NOT EXISTS` on `d_risk_tags_summary` |
@@ -183,8 +183,10 @@ itself starts in June 2026. Move it if older data is ever loaded.
 | Average Deposit | Total Deposit / Deposit Count, 2 dp | number |
 | Deposit Count | number of successful deposits | number |
 | LDD | days since the last deposit | number |
+| Days Since FTD | days since `agg_player_summary.first_deposit` | number |
 | Hold % | (deposits − withdrawals) / deposits × 100, 2 dp | number; negative when withdrawals exceed deposits |
 | Player Status | `agg_player_summary.risk_casino_segment` | |
+| Account Status | `agg_players_info_hyper.is_blocked` | `block` or `active`; a player missing from that table is `active` (LEFT JOIN) |
 | Статус звонка | — | empty, for the managers |
 | Количество попыток дозвона | — | empty, for the managers |
 | Менеджер | — | empty, for the managers |
@@ -200,7 +202,7 @@ in both workflows.
 | Situation | Result |
 |---|---|
 | Athena returns `FAILED` / `CANCELLED` / an unexpected state | `Athena Query Failed` stops the run. Sheet untouched. |
-| Query still running after 120 polls (~10 min) | `Athena Poll Timeout` stops the run. Sheet untouched. |
+| Query still running after 120 polls (LA: ~10 min at 5 s, Norm: ~30 min at 15 s) | `Athena Poll Timeout` stops the run. Sheet untouched. |
 | Result above 100 pages (100,000 rows) | `Parse Athena Page` throws. Sheet untouched. |
 | A required column missing from the result | `Parse Athena Page` throws. Sheet untouched. |
 | `callCooldownDays` not a whole number ≥ 1 | `Select Recent Tabs` throws. Sheet untouched. |
