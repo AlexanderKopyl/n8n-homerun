@@ -114,6 +114,7 @@ registered-players-without-deposits-la.json    Registrants of the last 10 days w
 players-12m-export-norm.json     Daily depositors with 12-month metrics (NORMCASINO) -> 'NORMCASINO' tab, page by page
 players-12m-export-la.json       Daily depositors with 12-month metrics (LACASINO) -> 'LACASINO' tab, page by page
 players-12m-export-volk.json     Daily depositors with 12-month metrics (VOLKCASINO) -> 'VOLKCASINO' tab, page by page
+manual-deposits-export.json      Yesterday's manual deposits (ManualDeposit, all brands except SBNORM) -> .xlsx file in a Slack channel
 ```
 
 Depositing Players Export (Norm and LA) setup: [docs/workflows/depositing-players-export.md](docs/workflows/depositing-players-export.md).
@@ -121,6 +122,8 @@ Depositing Players Export (Norm and LA) setup: [docs/workflows/depositing-player
 Registered Players Without Deposits (Norm and LA) setup: [docs/workflows/registered-players-without-deposits.md](docs/workflows/registered-players-without-deposits.md).
 
 Players 12M Export (Norm, LA and Volk) setup: [docs/workflows/players-12m-export.md](docs/workflows/players-12m-export.md).
+
+Manual Deposits Export setup (Slack bot token, channel ID): [docs/workflows/manual-deposits-export.md](docs/workflows/manual-deposits-export.md).
 
 Configuration and testing: [docs/workflows/analytics-slack-report.md](docs/workflows/analytics-slack-report.md).
 

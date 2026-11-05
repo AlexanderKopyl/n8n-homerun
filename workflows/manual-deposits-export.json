@@ -1,0 +1,1011 @@
+{
+  "name": "Manual Deposits Export",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 1 * * *"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -1100,
+        0
+      ],
+      "id": "e3d7a001-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "Schedule Trigger",
+      "notes": "01:00 UTC daily (workflow timezone is UTC). f_payment is loaded at 00:00 UTC with yesterday's data, so the run must not start before 00:30 UTC."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "e3d7b100-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+              "name": "athenaRegion",
+              "value": "eu-central-1",
+              "type": "string"
+            },
+            {
+              "id": "e3d7b101-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+              "name": "athenaDatabase",
+              "value": "operator_ro_normcasino",
+              "type": "string"
+            },
+            {
+              "id": "e3d7b102-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+              "name": "athenaCatalog",
+              "value": "AwsDataCatalog",
+              "type": "string"
+            },
+            {
+              "id": "e3d7b103-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+              "name": "athenaWorkgroup",
+              "value": "primary",
+              "type": "string"
+            },
+            {
+              "id": "e3d7b104-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+              "name": "athenaOutputLocation",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "e3d7b105-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+              "name": "slackChannelId",
+              "value": "REPLACE_WITH_SLACK_CHANNEL_ID",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": false,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -880,
+        0
+      ],
+      "id": "e3d7a002-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "Config",
+      "notes": "Deployment settings. slackChannelId is the channel ID (C...), set on the instance; the bot of the Slack API credential must be a member of that channel."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://athena.{{ $('Config').first().json.athenaRegion }}.amazonaws.com/",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "awsAssumeRole",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-amz-json-1.1"
+            },
+            {
+              "name": "X-Amz-Target",
+              "value": "AmazonAthena.StartQueryExecution"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"QueryString\": \"-- ============================================================\\n-- Ручные депозиты ManualDeposit за вчера (UTC) - ежедневная выгрузка в Slack\\n-- Колонки повторяют выгрузку транзакций UBO.\\n--\\n-- Логика:\\n--   f_payment, payment_method_name = 'ManualDeposit' (provider_name = 'Backoffice',\\n--   is_manual = true). Это оба типа ручного зачисления:\\n--     adjustment deposit + reason 3 'Compensation'      - компенсации (~95 %)\\n--     deposit            + reason 9 'Courier deposit'   - бывают в USDT / ETH / TRX\\n--   Стримеры и тестовые НЕ исключаются (так просили). SBNORM (песочница) исключен.\\n--\\n-- Поля UBO -> данные (сверено по двум транзакциям из UBO от 26.10.2026):\\n--   ID               = apm_order_id (transaction_id у ручных пуст)\\n--   Created/Updated  = action_ts / update_ts, UTC. В UBO те же транзакции на 4 часа позже\\n--   Creating Reason  = ref_apm_transaction_reasons.reason по reason_id + transaction_type\\n--   Transaction type = в данных 'adjustment deposit', в UBO у тех же строк 'deposit'\\n--   Currency         = amount_currency: в данных RUB, в UBO 'SHU'\\n--   Notes            = comment (creation_comment пуст у всех)\\n--   Risk casino seg  = сегмент на момент транзакции (f_payment), не текущий\\n--   In Promo, Bonus Applied - в Athena нет, убраны (Иван, 2026-11-05)\\n--\\n-- Решения Ивана 2026-11-05: сутки UTC, вчера целиком; тип и валюта как в данных;\\n--   SBNORM исключен; сегмент на момент операции.\\n--\\n-- ВАЖНО: f_payment грузится раз в сутки в 00:00 UTC данными по вчера -\\n--        расписание ставить не раньше 00:30 UTC.\\n--        В SQL нет знака вопроса.\\n--\\n-- Диалект: Trino / Athena. Таблицы указаны как database.table (каталог AwsDataCatalog\\n-- задаётся в QueryExecutionContext, DBeaver-овский префикс \\\"Athena-bebohuex\\\" здесь не нужен).\\n-- ============================================================\\n\\nwith params as (\\n    select date_add('day', -1, current_date) as day_from,\\n           current_date                      as day_to_excl\\n),\\n\\nmd as (\\n    -- ручные депозиты за сутки, одна строка на заказ (страховка от дублей)\\n    select fp.*,\\n           row_number() over (partition by fp.apm_order_id order by fp.update_ts desc) as rn\\n    from operator_ro_normcasino.f_payment fp\\n    cross join params p\\n    where fp.action_date >= p.day_from\\n      and fp.action_date <  p.day_to_excl\\n      and fp.payment_method_name = 'ManualDeposit'\\n      and fp.brand <> 'SBNORM'\\n)\\n\\nselect md.apm_order_id                                        as \\\"ID\\\",\\n       upper(cast(md.is_manual as varchar))                   as \\\"Manual\\\",\\n       md.player_id                                           as \\\"Player ID\\\",\\n       md.brand                                               as \\\"Brand\\\",\\n       md.player_risk_casino_segment_name                     as \\\"Risk casino segment\\\",\\n       date_format(md.action_ts, '%Y-%m-%d %H:%i:%s')         as \\\"Created\\\",\\n       date_format(md.update_ts, '%Y-%m-%d %H:%i:%s')         as \\\"Updated\\\",\\n       r.reason                                               as \\\"Creating Reason\\\",\\n       md.transaction_type                                    as \\\"Transaction type\\\",\\n       md.status                                              as \\\"Transaction status\\\",\\n       cast(md.paid_amount as double)                         as \\\"Paid amount\\\",\\n       md.amount_currency                                     as \\\"Currency\\\",\\n       md.modified_by                                         as \\\"Modified by\\\",\\n       md.decline_reason_message                              as \\\"Decline reason\\\",\\n       md.comment                                             as \\\"Notes\\\",\\n       md.payment_method_name                                 as \\\"Payment method\\\"\\nfrom md\\nleft join operator_ro_normcasino.ref_apm_transaction_reasons r\\n       on r.reason_id = md.reason_id\\n      and r.transaction_type = md.transaction_type\\nwhere md.rn = 1\\norder by md.action_ts desc\",\n  \"QueryExecutionContext\": { \"Database\": \"{{ $('Config').first().json.athenaDatabase }}\", \"Catalog\": \"{{ $('Config').first().json.athenaCatalog || 'AwsDataCatalog' }}\" },\n  \"WorkGroup\": \"{{ $('Config').first().json.athenaWorkgroup || 'primary' }}\",\n  \"ClientRequestToken\": \"n8n-manual-deposits-export-execution-{{ $execution.id }}\"\n  {{ $('Config').first().json.athenaOutputLocation ? ', \"ResultConfiguration\": { \"OutputLocation\": \"' + $('Config').first().json.athenaOutputLocation + '\" }' : '' }}\n}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -660,
+        0
+      ],
+      "id": "e3d7a003-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "Execute Athena Query",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "ClientRequestToken is derived from the execution id, so a retry of this node rejoins the same Athena query instead of starting a second one."
+    },
+    {
+      "parameters": {
+        "amount": 5,
+        "unit": "seconds"
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -440,
+        0
+      ],
+      "id": "e3d7a004-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "Wait 5s",
+      "webhookId": "e3d7c900-6c1a-4f2b-9d3e-4a5b6c7d8e9f"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://athena.{{ $('Config').first().json.athenaRegion }}.amazonaws.com/",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "awsAssumeRole",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-amz-json-1.1"
+            },
+            {
+              "name": "X-Amz-Target",
+              "value": "AmazonAthena.GetQueryExecution"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"QueryExecutionId\": \"{{ $('Execute Athena Query').first().json.QueryExecutionId }}\"\n}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -220,
+        0
+      ],
+      "id": "e3d7a005-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "Poll Athena Query Status",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e3d7b110-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "SUCCEEDED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Succeeded"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e3d7b111-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "QUEUED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Queued"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e3d7b112-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "RUNNING",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Running"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e3d7b113-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "FAILED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Failed"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e3d7b114-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+                    "leftValue": "={{ $json.QueryExecution.Status.State }}",
+                    "rightValue": "CANCELLED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Cancelled"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "Unexpected State"
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        0,
+        0
+      ],
+      "id": "e3d7a006-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "Athena Query State"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e3d7b120-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+              "leftValue": "={{ $runIndex }}",
+              "rightValue": 120,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        260,
+        180
+      ],
+      "id": "e3d7a007-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "Poll Attempts Remaining?",
+      "notes": "true -> wait and poll again; false -> give up after 120 polls (~10 min)"
+    },
+    {
+      "parameters": {
+        "errorMessage": "=Athena query {{ $('Execute Athena Query').first().json.QueryExecutionId }} did not finish within the polling budget of 120 polls x 5 s (~10 minutes). Last observed state: {{ $json.QueryExecution.Status.State }}. Nothing was sent to Slack."
+      },
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        480,
+        180
+      ],
+      "id": "e3d7a008-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "Athena Poll Timeout"
+    },
+    {
+      "parameters": {
+        "errorMessage": "=Athena query {{ $json.QueryExecution.QueryExecutionId }} ended in state {{ $json.QueryExecution.Status.State }}. Reason: {{ $json.QueryExecution.Status.StateChangeReason || 'no StateChangeReason returned by Athena' }}. Nothing was sent to Slack."
+      },
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        260,
+        400
+      ],
+      "id": "e3d7a009-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "Athena Query Failed"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://athena.{{ $('Config').first().json.athenaRegion }}.amazonaws.com/",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "awsAssumeRole",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/x-amz-json-1.1"
+            },
+            {
+              "name": "X-Amz-Target",
+              "value": "AmazonAthena.GetQueryResults"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"QueryExecutionId\": \"{{ $('Execute Athena Query').first().json.QueryExecutionId }}\",\n  \"MaxResults\": 1000{{ $json.nextToken ? ', \"NextToken\": ' + JSON.stringify($json.nextToken) : '' }}\n}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        260,
+        -200
+      ],
+      "id": "e3d7a010-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "Get Athena Results Page",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "Runs once per page: first from Athena Query State (no nextToken), then from More Pages? with the previous page's nextToken."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Athena Page\n//\n// Input : one item = one raw Athena GetQueryResults response (one page, up to 1000 rows).\n// Output: one item = { page, nextToken, rowCount, rows }, rows in Athena's own order.\n//\n// Runs once per page. Collect Export Rows reads every run of this node back by run index,\n// so each run only has to describe its own page.\n\n// 100 pages x 1000 rows. The export is expected to return 100-150 rows a day; a result this\n// large means the date filter has gone missing.\nconst MAX_PAGES = 100;\n\n// Athena column names, as aliased in the SQL. They become the spreadsheet headers.\nconst COLUMNS = [\n  'ID',\n  'Manual',\n  'Player ID',\n  'Brand',\n  'Risk casino segment',\n  'Created',\n  'Updated',\n  'Creating Reason',\n  'Transaction type',\n  'Transaction status',\n  'Paid amount',\n  'Currency',\n  'Modified by',\n  'Decline reason',\n  'Notes',\n  'Payment method'\n];\n\n/** Athena returns every value as a string, or omits VarCharValue entirely for NULL. */\nfunction cellValue(cell) {\n  if (cell === null || cell === undefined) return null;\n  const raw = cell.VarCharValue;\n  if (raw === null || raw === undefined) return null;\n  return String(raw);\n}\n\nconst page = $runIndex;\n\nif (page >= MAX_PAGES) {\n  throw new Error(\n    `Athena result exceeds ${MAX_PAGES} pages (${MAX_PAGES * 1000} rows). The export query ` +\n      'has probably lost its date filter. Investigate before raising MAX_PAGES.',\n  );\n}\n\nconst inputItems = $input.all();\nif (inputItems.length !== 1) {\n  throw new Error(\n    `Parse Athena Page expected exactly 1 input item from Athena, received ${inputItems.length}.`,\n  );\n}\n\nconst response = inputItems[0].json ?? {};\nconst resultSet = response.ResultSet;\nif (!resultSet || !Array.isArray(resultSet.Rows)) {\n  throw new Error(\n    'Unexpected Athena response: ResultSet.Rows is missing. Check the Get Athena Results Page node output.',\n  );\n}\n\nconst columns = (resultSet.ResultSetMetadata?.ColumnInfo ?? []).map((column) => column?.Name);\nconst missingColumns = COLUMNS.filter((column) => !columns.includes(column));\nif (missingColumns.length > 0) {\n  throw new Error(\n    `Athena result is missing column(s): ${missingColumns.join(', ')}. The export SQL and this ` +\n      'node have drifted apart. Update both together.',\n  );\n}\n\n// Athena prepends a header row, on the first page only.\nlet rows = resultSet.Rows;\nif (page === 0) {\n  const firstRowValues = (rows[0]?.Data ?? []).map(cellValue);\n  const firstRowIsHeader =\n    firstRowValues.length === columns.length &&\n    firstRowValues.every((value, index) => value === columns[index]);\n  if (firstRowIsHeader) rows = rows.slice(1);\n}\n\nconst records = [];\nfor (const row of rows) {\n  const cells = row?.Data ?? [];\n  const record = {};\n  columns.forEach((columnName, index) => {\n    record[columnName] = cellValue(cells[index]);\n  });\n  if (Object.values(record).every((value) => value === null)) continue;\n  records.push(record);\n}\n\nreturn [\n  {\n    json: {\n      page,\n      nextToken: response.NextToken ?? null,\n      rowCount: records.length,\n      rows: records,\n    },\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        -200
+      ],
+      "id": "e3d7a011-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "Parse Athena Page"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e3d7b121-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+              "leftValue": "={{ $json.nextToken }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        700,
+        -200
+      ],
+      "id": "e3d7a012-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "More Pages?",
+      "notes": "true -> fetch the next page; false -> all pages read"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Collect Export Rows\n//\n// Input : one item = the last page from Parse Athena Page ({ page, nextToken: null, ... }).\n// Output: one item = { reportDate, fileName, rowCount, summaryText, records }.\n//\n// Gathers every run of Parse Athena Page in page order and writes the text of the Slack\n// message. The same item feeds both branches of Rows Found?: the file upload and the\n// \"nothing today\" notice, so the message text is defined here and nowhere else.\n\nconst inputItems = $input.all();\nif (inputItems.length !== 1) {\n  throw new Error(`Collect Export Rows expected exactly 1 input item, received ${inputItems.length}.`);\n}\n\nconst lastPage = inputItems[0].json.page;\nif (!Number.isInteger(lastPage) || lastPage < 0) {\n  throw new Error(`Collect Export Rows received an invalid page index: ${lastPage}.`);\n}\n\nconst records = [];\nfor (let run = 0; run <= lastPage; run++) {\n  const pageItems = $('Parse Athena Page').all(0, run);\n  if (pageItems.length !== 1) {\n    throw new Error(\n      `Parse Athena Page run ${run} produced ${pageItems.length} items, expected 1. ` +\n        'Pages cannot be stitched together reliably. Nothing was sent to Slack.',\n    );\n  }\n  records.push(...(pageItems[0].json.rows ?? []));\n}\n\n// The SQL reads \"yesterday\" as date_add('day', -1, current_date) in Athena, which runs on UTC.\n// Mirror that here so the file name and the message name the same day as the data.\nconst reportDate = $now.toUTC().minus({ days: 1 }).toFormat('yyyy-MM-dd');\nconst fileName = `manual_deposits_${reportDate}.xlsx`;\n\n/** Counts records by one column, e.g. { Compensation: 117, 'Courier deposit': 6 }. */\nfunction countBy(column) {\n  const counts = new Map();\n  for (const record of records) {\n    const key = record[column] === null || record[column] === '' ? '(empty)' : String(record[column]);\n    counts.set(key, (counts.get(key) ?? 0) + 1);\n  }\n  return [...counts.entries()]\n    .sort((a, b) => b[1] - a[1])\n    .map(([key, count]) => `${key}: ${count}`)\n    .join(', ');\n}\n\nconst lines = [`Ручные депозиты ManualDeposit за ${reportDate} (UTC): ${records.length} шт.`];\nif (records.length > 0) {\n  lines.push(`По причине: ${countBy('Creating Reason')}`);\n  lines.push(`По статусу: ${countBy('Transaction status')}`);\n} else {\n  lines.push('Файл не прикреплён: за сутки нет ни одной строки.');\n}\n\nreturn [\n  {\n    json: {\n      reportDate,\n      fileName,\n      rowCount: records.length,\n      summaryText: lines.join('\\n'),\n      records,\n    },\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        -200
+      ],
+      "id": "e3d7a013-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "Collect Export Rows"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e3d7b122-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+              "leftValue": "={{ $json.rowCount }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1140,
+        -200
+      ],
+      "id": "e3d7a014-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "Rows Found?",
+      "notes": "true -> build the spreadsheet and upload it; false -> post a short notice that there were no manual deposits"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build Export Rows\n//\n// Input : one item = { records } from Collect Export Rows (only when rowCount > 0).\n// Output: one item per record, flat, in query order. Convert to XLSX turns the set into one\n//         spreadsheet: keys become the header row, in the order defined by COLUMNS.\n//\n// Athena hands every value over as a string. \"Paid amount\" is sent as a number so the sheet\n// can sum and sort it; everything else stays text, so IDs keep their exact digits.\n\nconst COLUMNS = [\n  'ID',\n  'Manual',\n  'Player ID',\n  'Brand',\n  'Risk casino segment',\n  'Created',\n  'Updated',\n  'Creating Reason',\n  'Transaction type',\n  'Transaction status',\n  'Paid amount',\n  'Currency',\n  'Modified by',\n  'Decline reason',\n  'Notes',\n  'Payment method'\n];\nconst NUMBER_COLUMNS = new Set(['Paid amount']);\n\nconst inputItems = $input.all();\nif (inputItems.length !== 1) {\n  throw new Error(`Build Export Rows expected exactly 1 input item, received ${inputItems.length}.`);\n}\n\nconst records = inputItems[0].json.records;\nif (!Array.isArray(records) || records.length === 0) {\n  throw new Error('Build Export Rows received no records. Rows Found? should have routed this run to Post Empty Notice.');\n}\n\nfunction toCell(column, value) {\n  if (value === null || value === undefined) return '';\n  if (NUMBER_COLUMNS.has(column)) {\n    const number = Number(value);\n    if (!Number.isFinite(number)) {\n      throw new Error(`Column \"${column}\" holds a non-numeric value \"${value}\". Check the export SQL.`);\n    }\n    return number;\n  }\n  return String(value);\n}\n\nreturn records.map((record) => {\n  const row = {};\n  for (const column of COLUMNS) row[column] = toCell(column, record[column]);\n  return { json: row };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        -300
+      ],
+      "id": "e3d7a015-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "Build Export Rows"
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "options": {
+          "fileName": "={{ $('Collect Export Rows').first().json.fileName }}",
+          "headerRow": true,
+          "sheetName": "ManualDeposit"
+        }
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        1580,
+        -300
+      ],
+      "id": "e3d7a016-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "Convert to XLSX",
+      "notes": "All input items become one .xlsx in binary property \"data\". XLSX rather than CSV so the file opens in Excel with any locale and \"Paid amount\" stays numeric."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare Slack Upload\n//\n// Input : one item with the spreadsheet in binary property \"data\" (from Convert to XLSX).\n// Output: the same item, with the fields files.getUploadURLExternal needs in json:\n//         { fileName, length, title, initialComment, channelId }.\n//\n// Slack requires the exact byte length of the file up front, so the buffer is read here\n// instead of trusting the human-readable fileSize (\"12.3 kB\") on the binary metadata.\n\nconst inputItems = $input.all();\nif (inputItems.length !== 1) {\n  throw new Error(`Prepare Slack Upload expected exactly 1 input item, received ${inputItems.length}.`);\n}\n\nconst item = inputItems[0];\nif (!item.binary || !item.binary.data) {\n  throw new Error('Prepare Slack Upload received no binary \"data\" property. Check the Convert to XLSX node.');\n}\n\nconst config = $('Config').first().json;\nconst channelId = String(config.slackChannelId ?? '').trim();\nif (channelId === '' || channelId.startsWith('REPLACE')) {\n  throw new Error('Config.slackChannelId is not set. Enter the Slack channel ID (C...) on the instance.');\n}\n\nconst buffer = await this.helpers.getBinaryDataBuffer(0, 'data');\nif (!buffer || buffer.length === 0) {\n  throw new Error('The generated spreadsheet is empty (0 bytes). Nothing was sent to Slack.');\n}\n\nconst meta = $('Collect Export Rows').first().json;\n\nreturn [\n  {\n    json: {\n      fileName: meta.fileName,\n      length: buffer.length,\n      title: meta.fileName,\n      initialComment: meta.summaryText,\n      channelId,\n    },\n    binary: item.binary,\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        -300
+      ],
+      "id": "e3d7a017-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "Prepare Slack Upload"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://slack.com/api/files.getUploadURLExternal",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "slackApi",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "filename",
+              "value": "={{ $json.fileName }}"
+            },
+            {
+              "name": "length",
+              "value": "={{ $json.length }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2020,
+        -300
+      ],
+      "id": "e3d7a018-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "Get Slack Upload URL",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "Step 1 of 3 of Slack's external upload. Needs the Slack API credential (bot token, scope files:write)."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Check Upload URL\n//\n// Input : one item = the files.getUploadURLExternal response. Slack answers HTTP 200 even\n//         when the call fails, with { ok: false, error: '...' }, so the HTTP node never\n//         fails on its own.\n// Output: the Prepare Slack Upload item (json + the spreadsheet binary) extended with\n//         upload_url and file_id for the next two nodes.\n\nconst inputItems = $input.all();\nif (inputItems.length !== 1) {\n  throw new Error(`Check Upload URL expected exactly 1 input item, received ${inputItems.length}.`);\n}\n\nconst response = inputItems[0].json ?? {};\nif (response.ok !== true) {\n  throw new Error(\n    `Slack files.getUploadURLExternal failed: ${response.error ?? 'no error code returned'}. ` +\n      'Check the Slack API credential (bot token with files:write) on Get Slack Upload URL.',\n  );\n}\nif (!response.upload_url || !response.file_id) {\n  throw new Error('Slack files.getUploadURLExternal returned ok but no upload_url / file_id.');\n}\n\nconst prepared = $('Prepare Slack Upload').first();\n\nreturn [\n  {\n    json: { ...prepared.json, upload_url: response.upload_url, file_id: response.file_id },\n    binary: prepared.binary,\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        -300
+      ],
+      "id": "e3d7a019-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "Check Upload URL"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.upload_url }}",
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data",
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2460,
+        -300
+      ],
+      "id": "e3d7a020-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "Upload File to Slack",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "Step 2 of 3: raw file bytes to the one-time upload_url. No auth: the URL itself is the credential. Slack answers with plain text, not JSON."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://slack.com/api/files.completeUploadExternal",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "slackApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ files: [{ id: $('Check Upload URL').first().json.file_id, title: $('Check Upload URL').first().json.title }], channel_id: $('Check Upload URL').first().json.channelId, initial_comment: $('Check Upload URL').first().json.initialComment }) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2680,
+        -300
+      ],
+      "id": "e3d7a021-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "Complete Slack Upload",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "Step 3 of 3: shares the file in the channel with the summary as the message text. Can only be called once per file_id."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://slack.com/api/chat.postMessage",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "slackApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ channel: $('Config').first().json.slackChannelId, text: $json.summaryText }) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1360,
+        -100
+      ],
+      "id": "e3d7a022-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "Post Empty Notice",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "notes": "Zero rows for the day: post the summary line without a file, so a silent day is distinguishable from a failed run. Needs scope chat:write."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verify Slack Response\n//\n// Input : one item = a Slack Web API response, from files.completeUploadExternal or\n//         chat.postMessage. Both answer HTTP 200 with { ok: false, error } on failure, so the\n//         execution would otherwise look green while nothing reached the channel.\n// Output: one item = { ok: true, fileIds, messageTs } for the execution log.\n\nconst inputItems = $input.all();\nif (inputItems.length !== 1) {\n  throw new Error(`Verify Slack Response expected exactly 1 input item, received ${inputItems.length}.`);\n}\n\nconst response = inputItems[0].json ?? {};\nif (response.ok !== true) {\n  const hints = {\n    not_in_channel: 'invite the bot to the channel (/invite @<app name>)',\n    channel_not_found: 'check Config.slackChannelId (use the channel ID, not its name)',\n    missing_scope: `add the missing scope to the Slack app: ${response.needed ?? 'see the Slack app settings'}`,\n    invalid_auth: 'the bot token on the Slack API credential is wrong or revoked',\n  };\n  const error = response.error ?? 'no error code returned';\n  throw new Error(`Slack API call failed: ${error}. ${hints[error] ?? 'See https://docs.slack.dev/reference/methods'}`);\n}\n\nreturn [\n  {\n    json: {\n      ok: true,\n      fileIds: Array.isArray(response.files) ? response.files.map((file) => file.id) : [],\n      messageTs: response.ts ?? null,\n    },\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2900,
+        -200
+      ],
+      "id": "e3d7a023-6c1a-4f2b-9d3e-4a5b6c7d8e9f",
+      "name": "Verify Slack Response"
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Execute Athena Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Athena Query": {
+      "main": [
+        [
+          {
+            "node": "Wait 5s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 5s": {
+      "main": [
+        [
+          {
+            "node": "Poll Athena Query Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll Athena Query Status": {
+      "main": [
+        [
+          {
+            "node": "Athena Query State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Athena Query State": {
+      "main": [
+        [
+          {
+            "node": "Get Athena Results Page",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Poll Attempts Remaining?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Poll Attempts Remaining?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Athena Query Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Athena Query Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Athena Query Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll Attempts Remaining?": {
+      "main": [
+        [
+          {
+            "node": "Wait 5s",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Athena Poll Timeout",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Athena Results Page": {
+      "main": [
+        [
+          {
+            "node": "Parse Athena Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Athena Page": {
+      "main": [
+        [
+          {
+            "node": "More Pages?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "More Pages?": {
+      "main": [
+        [
+          {
+            "node": "Get Athena Results Page",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Collect Export Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Export Rows": {
+      "main": [
+        [
+          {
+            "node": "Rows Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rows Found?": {
+      "main": [
+        [
+          {
+            "node": "Build Export Rows",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Post Empty Notice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Export Rows": {
+      "main": [
+        [
+          {
+            "node": "Convert to XLSX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to XLSX": {
+      "main": [
+        [
+          {
+            "node": "Prepare Slack Upload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Slack Upload": {
+      "main": [
+        [
+          {
+            "node": "Get Slack Upload URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Slack Upload URL": {
+      "main": [
+        [
+          {
+            "node": "Check Upload URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Upload URL": {
+      "main": [
+        [
+          {
+            "node": "Upload File to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload File to Slack": {
+      "main": [
+        [
+          {
+            "node": "Complete Slack Upload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Complete Slack Upload": {
+      "main": [
+        [
+          {
+            "node": "Verify Slack Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post Empty Notice": {
+      "main": [
+        [
+          {
+            "node": "Verify Slack Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "UTC",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true
+  }
+}
